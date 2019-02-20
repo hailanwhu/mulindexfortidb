@@ -518,6 +518,12 @@ func (e *Explain) explainPlanInRowFormat(p PhysicalPlan, taskType, indent string
 	case *PhysicalIndexLookUpReader:
 		e.explainPlanInRowFormat(copPlan.indexPlan, "cop", childIndent, false)
 		e.explainPlanInRowFormat(copPlan.tablePlan, "cop", childIndent, true)
+	case *PhysicalMulIndexAndLookUpReader:
+		for i := 0 ;i < len(copPlan.IndexPlans) - 1 ;i++  {
+			e.explainPlanInRowFormat(copPlan.IndexPlans[i],"cop",childIndent,false)
+		}
+		e.explainPlanInRowFormat(copPlan.IndexPlans[len(copPlan.IndexPlans) - 1],"cop",childIndent,false)
+		e.explainPlanInRowFormat(copPlan.TablePlans[0],"cop",childIndent,true)
 	}
 }
 

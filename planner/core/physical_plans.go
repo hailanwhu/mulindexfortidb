@@ -49,7 +49,20 @@ var (
 	_ PhysicalPlan = &PhysicalMergeJoin{}
 	_ PhysicalPlan = &PhysicalUnionScan{}
 	_ PhysicalPlan = &PhysicalWindow{}
+	_ PhysicalPlan = &PhysicalMulIndexAndLookUpReader{}
 )
+
+// PhysicalMulIndexAndLookUpReader
+type PhysicalMulIndexAndLookUpReader struct {
+	physicalSchemaProducer
+
+	//Follow two plans flat to construct executor pb.
+	IndexPlans []PhysicalPlan
+	TablePlans []PhysicalPlan
+
+	indexPlans []PhysicalPlan
+	tablePlans []PhysicalPlan
+}
 
 // PhysicalTableReader is the table reader in tidb.
 type PhysicalTableReader struct {

@@ -50,6 +50,15 @@ type copTask struct {
 	// In double read case, it may output one more column for handle(row id).
 	// We need to prune it, so we add a project do this.
 	doubleReadNeedProj bool
+
+	//save the multi index plan
+	indexPlans []PhysicalPlan
+
+	// 0 for not multi
+	// 1 for PhysicalMulIndexAndLookUpReader
+	// 2 for PhysicalMulIndexAndReader
+	// 3 for PhysicalMulIndexUnionLookUpReader
+	mulType int
 }
 
 func (t *copTask) invalid() bool {
@@ -201,6 +210,18 @@ func finishCopTask(ctx sessionctx.Context, task task) task {
 	if !ok {
 		return task
 	}
+	// TODO now just test it
+	if t.mulType == 1 {
+		p := PhysicalMulIndexAndLookUpReader{IndexPlans: t.indexPlans, TablePlans: []PhysicalPlan{t.tablePlan}}.Init(ctx)
+		p.stats = t.indexPlans[0].statsInfo()
+		newTask := &rootTask{
+			cst: 0,
+		}
+		newTask.p = p
+
+		return newTask
+	}
+
 	// FIXME: When it is a double reading. The cost should be more expensive. The right cost should add the
 	// `NetWorkStartCost` * (totalCount / perCountIndexRead)
 	t.finishIndexPlan()

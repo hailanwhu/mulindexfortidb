@@ -409,6 +409,30 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 			t = idxTask
 		}
 	}
+
+	// now we consider wheather can be MulIndex-Type Reader
+	// we just to consider all condition is connected with 'and' or 'or'.
+	// if it is 'and', every index accessPath's filter: accessCondtions is index attr condition tableFilters is other conditions
+	// if it is 'or' , every index accessPaht's filter: tableFilters is all conditions
+	// so, if is 'or' , we need to check all conditions is index attr conditions
+	// first, confirm conditions' form
+	// second, convert MulIndexPlan
+	canBeMulIndex := false
+	if len(ds.possibleAccessPaths) > 2 {
+		//TODO later this will be a function to confirm
+		canBeMulIndex = true
+	}
+	if canBeMulIndex {
+		paths := ds.possibleAccessPaths[1:]
+		mulIndexTask, err := ds.convertToMulIndexScan(prop, paths)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		if ds.tableInfo.Name.L == "t1" {
+			t = mulIndexTask
+		}
+	}
+
 	return
 }
 
@@ -676,6 +700,54 @@ func (ds *DataSource) convertToTableScan(prop *property.PhysicalProperty, candid
 	} else if _, ok := task.(*rootTask); ok {
 		return invalidTask, nil
 	}
+	return task, nil
+}
+
+// convertToMulIndexScan converts the DataSource to MulIndexScan.
+func (ds *DataSource) convertToMulIndexScan(prop *property.PhysicalProperty, paths []*accessPath) (task task, err error) {
+	indexPlans := make([]PhysicalPlan,0)
+	for _,path := range paths {
+		idx := path.index
+		is := PhysicalIndexScan{
+			Table:            ds.tableInfo,
+			TableAsName:      ds.TableAsName,
+			DBName:           ds.DBName,
+			Columns:          ds.Columns,
+			Index:            idx,
+			IdxCols:          path.idxCols,
+			IdxColLens:       path.idxColLens,
+			AccessCondition:  path.accessConds,
+			Ranges:           path.ranges,
+			filterCondition:  path.indexFilters,
+			dataSourceSchema: ds.schema,
+			isPartition:      ds.isPartition,
+			physicalTableID:  ds.physicalTableID,
+		}.Init(ds.ctx)
+		statsTbl := ds.statisticTable
+		if statsTbl.Indices[idx.ID] != nil {
+			is.Hist = &statsTbl.Indices[idx.ID].Histogram
+		}
+		is.stats = ds.stats
+		indexPlans = append(indexPlans, is)
+	}
+	ts := PhysicalTableScan{
+		Columns:         ds.Columns,
+		Table:           ds.tableInfo,
+		isPartition:     ds.isPartition,
+		physicalTableID: ds.physicalTableID,
+	}.Init(ds.ctx)
+	ts.SetSchema(ds.schema.Clone())
+	ts.stats = ds.stats
+	copTask := &copTask{indexPlans: indexPlans, mulType:1, tablePlan: ts}
+	task = copTask
+	//TODO this will be add cost
+
+	if prop.TaskTp == property.RootTaskType {
+		task = finishCopTask(ds.ctx, task)
+	} else if _, ok := task.(*rootTask); ok {
+		return invalidTask, nil
+	}
+
 	return task, nil
 }
 
