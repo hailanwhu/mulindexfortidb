@@ -64,6 +64,18 @@ type PhysicalMulIndexAndLookUpReader struct {
 	tablePlans []PhysicalPlan
 }
 
+// PhysicalMulIndexAndLookUpReader
+type PhysicalMulIndexUnionLookUpReader struct {
+	physicalSchemaProducer
+
+	//Follow two plans flat to construct executor pb.
+	IndexPlans []PhysicalPlan
+	TablePlans []PhysicalPlan
+
+	indexPlans []PhysicalPlan
+	tablePlans []PhysicalPlan
+}
+
 // PhysicalTableReader is the table reader in tidb.
 type PhysicalTableReader struct {
 	physicalSchemaProducer

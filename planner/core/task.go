@@ -220,6 +220,10 @@ func finishCopTask(ctx sessionctx.Context, task task) task {
 		newTask.p = p
 
 		return newTask
+	} else if t.mulType == 2 {
+
+	} else if t.mulType == 3 {
+
 	}
 
 	// FIXME: When it is a double reading. The cost should be more expensive. The right cost should add the

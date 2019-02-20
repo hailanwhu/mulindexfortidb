@@ -14,6 +14,7 @@
 package core
 
 import (
+	"log"
 	"math"
 
 	"github.com/pingcap/errors"
@@ -329,6 +330,12 @@ func (ds *DataSource) skylinePruning(prop *property.PhysicalProperty) []*candida
 // findBestTask implements the PhysicalPlan interface.
 // It will enumerate all the available indices and choose a plan with least cost.
 func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err error) {
+	//Start-Delete
+	if ds.tableInfo.Name.L == "t1" {
+		log.Print(ds.possibleAccessPaths)
+	}
+	//End-Delete
+
 	// If ds is an inner plan in an IndexJoin, the IndexJoin will generate an inner plan by itself,
 	// and set inner child prop nil, so here we do nothing.
 	if prop == nil {
@@ -417,14 +424,20 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 	// so, if is 'or' , we need to check all conditions is index attr conditions
 	// first, confirm conditions' form
 	// second, convert MulIndexPlan
-	canBeMulIndex := false
+	mulType := 0
+	var paths []*accessPath
 	if len(ds.possibleAccessPaths) > 2 {
-		//TODO later this will be a function to confirm
-		canBeMulIndex = true
+		// TODO later this will be a function to confirm and get the mulType
+		// func (ds *Datasource) getMulTypeAndPaths() (int,[]path){}
+		// see copTask comments (0/1/2/3)
+		// this function also transforms the old path to new path at the 'or' conditions
+		// remember keep the the same order with ds.possibleAccessPaths
+		mulType = 0
+		//mulType,paths = ds.getMulTypeAndPaths()
 	}
-	if canBeMulIndex {
-		paths := ds.possibleAccessPaths[1:]
-		mulIndexTask, err := ds.convertToMulIndexScan(prop, paths)
+	if mulType > 1 {
+		//paths := ds.possibleAccessPaths[1:]
+		mulIndexTask, err := ds.convertToMulIndexScan(prop, paths, mulType)
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
@@ -434,6 +447,28 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 	}
 
 	return
+}
+
+func (ds *DataSource) getMulTypeAndPaths() (int, []*accessPath) {
+	tempPaths := ds.possibleAccessPaths[1:]
+	firstIndexPath := ds.possibleAccessPaths[1]
+
+
+	if len(firstIndexPath.accessConds) ==0 {
+		// 'or', check the tableFilters is 'or' connection
+
+		// if so
+		return 3, tempPaths
+
+	}else {
+		// 'and', check the tableFilters is 'and' connection
+
+		// if so, next to check schema
+
+		return 1, tempPaths
+
+	}
+	return 0,nil
 }
 
 func isCoveringIndex(columns []*expression.Column, indexColumns []*model.IndexColumn, pkIsHandle bool) bool {
@@ -704,7 +739,7 @@ func (ds *DataSource) convertToTableScan(prop *property.PhysicalProperty, candid
 }
 
 // convertToMulIndexScan converts the DataSource to MulIndexScan.
-func (ds *DataSource) convertToMulIndexScan(prop *property.PhysicalProperty, paths []*accessPath) (task task, err error) {
+func (ds *DataSource) convertToMulIndexScan(prop *property.PhysicalProperty, paths []*accessPath, mulType int) (task task, err error) {
 	indexPlans := make([]PhysicalPlan,0)
 	for _,path := range paths {
 		idx := path.index
@@ -738,7 +773,7 @@ func (ds *DataSource) convertToMulIndexScan(prop *property.PhysicalProperty, pat
 	}.Init(ds.ctx)
 	ts.SetSchema(ds.schema.Clone())
 	ts.stats = ds.stats
-	copTask := &copTask{indexPlans: indexPlans, mulType:1, tablePlan: ts}
+	copTask := &copTask{indexPlans: indexPlans, mulType: mulType, tablePlan: ts}
 	task = copTask
 	//TODO this will be add cost
 
