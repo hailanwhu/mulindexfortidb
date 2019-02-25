@@ -48,6 +48,7 @@ var (
 	_ Executor = &TableReaderExecutor{}
 	_ Executor = &IndexReaderExecutor{}
 	_ Executor = &IndexLookUpExecutor{}
+	_ Executor = &MulIndexAndLookUpExecutor{}
 )
 
 // LookupTableTaskChannelSize represents the channel size of the index double read taskChan.
@@ -207,6 +208,86 @@ func rebuildIndexRanges(ctx sessionctx.Context, is *plannercore.PhysicalIndexSca
 	}
 	ranges, _, err = ranger.DetachSimpleCondAndBuildRangeForIndex(ctx, access, idxCols, colLens)
 	return ranges, err
+}
+
+// Like IndexLookUpExecutor, but some fields become array.
+type MulIndexAndLookUpExecutor struct {
+	baseExecutor
+
+	table	table.Table
+	indices	[]*model.IndexInfo
+	physicalTableID	int64
+	keepOrder	[]bool
+	descs	[]bool
+	rangess          [][]*ranger.Range
+	dagPBs	[]*tipb.DAGRequest
+
+	handleIdx    int
+
+	tableRequest *tipb.DAGRequest
+	columns []*model.ColumnInfo
+	indexStreamings []bool
+	tableStreaming bool
+	*dataReaderBuilder
+
+	idxPlans	[]plannercore.PhysicalPlan
+	tablePlans []plannercore.PhysicalPlan
+
+	// first 's' for index, second 's' for column
+	idxColss [][]*expression.Column
+	colLenss [][]int
+
+	// just think doubleread,second step is the same as indexlookup
+	// andworder send task to tableworker
+	resultCh   chan *lookupTableTask
+	resultCurr *lookupTableTask
+
+	// now just set it invalid
+	feedback   *statistics.QueryFeedback
+
+	// to store all indeices return rowid
+	// then sort them and merger get the satisfy conditions rowid
+	rowids[][] int
+
+	// TODO (how to use them)
+	// corColInIdxSide bool
+	// corColInTblSide bool
+	// corColInAccess  bool
+
+
+}
+
+func (e *MulIndexAndLookUpExecutor) Close() error {
+	return nil
+}
+
+func (e *MulIndexAndLookUpExecutor) Next(ctx context.Context, req *chunk.RecordBatch) error {
+	return nil
+}
+
+func (e *MulIndexAndLookUpExecutor) Open(ctx context.Context) error {
+	kvRangess := make([][]kv.KeyRange,0,2)
+	for i := 0; i < len(e.idxPlans); i++ {
+		oneKVRanges, err := distsql.IndexRangesToKVRanges(e.ctx.GetSessionVars().StmtCtx, e.physicalTableID, e.indices[i].ID, e.rangess[i], e.feedback)
+		if err != nil {
+			// now not need, because it is invalid
+			// e.feedback.Invalidate()
+			return errors.Trace(err)
+		}
+		kvRangess = append(kvRangess,oneKVRanges)
+	}
+	log.Print("#In Build Open#distsql.go:276")
+	err := e.open(ctx,kvRangess)
+	if err != nil {
+		e.feedback.Invalidate()
+	}
+
+	return errors.Trace(err)
+}
+
+func (e *MulIndexAndLookUpExecutor) open(ctx context.Context, kvRanges [][]kv.KeyRange) error {
+	log.Print("#In Build open#distsql.go:289")
+	return nil
 }
 
 // IndexReaderExecutor sends dag request and reads index data from kv layer.

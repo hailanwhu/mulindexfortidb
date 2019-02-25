@@ -14,9 +14,6 @@
 package core
 
 import (
-	"log"
-	"math"
-
 	"github.com/pingcap/errors"
 	"github.com/pingcap/parser/model"
 	"github.com/pingcap/parser/mysql"
@@ -26,6 +23,8 @@ import (
 	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tidb/util/chunk"
 	"golang.org/x/tools/container/intsets"
+	"log"
+	"math"
 )
 
 const (
@@ -432,11 +431,14 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 		// see copTask comments (0/1/2/3)
 		// this function also transforms the old path to new path at the 'or' conditions
 		// remember keep the the same order with ds.possibleAccessPaths
-		mulType = 0
+		mulType = 1
 		//mulType,paths = ds.getMulTypeAndPaths()
 	}
-	if mulType > 1 {
-		//paths := ds.possibleAccessPaths[1:]
+	if mulType > 0 {
+		paths = ds.possibleAccessPaths[1:]
+		if ds.tableInfo.Name.L != "t1" {
+			return
+		}
 		mulIndexTask, err := ds.convertToMulIndexScan(prop, paths, mulType)
 		if err != nil {
 			return nil, errors.Trace(err)
@@ -444,6 +446,7 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 		if ds.tableInfo.Name.L == "t1" {
 			t = mulIndexTask
 		}
+
 	}
 
 	return
@@ -763,6 +766,8 @@ func (ds *DataSource) convertToMulIndexScan(prop *property.PhysicalProperty, pat
 			is.Hist = &statsTbl.Indices[idx.ID].Histogram
 		}
 		is.stats = ds.stats
+		// isDoubleRead is false just because of "must be"
+		is.initSchema(ds.id, idx, false)
 		indexPlans = append(indexPlans, is)
 	}
 	ts := PhysicalTableScan{

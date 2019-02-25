@@ -16,6 +16,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"log"
 	"math"
 	"sort"
 	"strings"
@@ -169,6 +170,8 @@ func (b *executorBuilder) build(p plannercore.Plan) Executor {
 		return b.buildIndexReader(v)
 	case *plannercore.PhysicalIndexLookUpReader:
 		return b.buildIndexLookUpReader(v)
+	case *plannercore.PhysicalMulIndexAndLookUpReader:
+		return b.buildMulIndexAndLookUpReader(v)
 	case *plannercore.PhysicalWindow:
 		return b.buildWindow(v)
 	default:
@@ -1755,6 +1758,97 @@ func (b *executorBuilder) buildIndexLookUpReader(v *plannercore.PhysicalIndexLoo
 	metrics.ExecutorCounter.WithLabelValues("IndexLookUpExecutor").Inc()
 	sctx := b.ctx.GetSessionVars().StmtCtx
 	sctx.IndexIDs = append(sctx.IndexIDs, is.Index.ID)
+	sctx.TableIDs = append(sctx.TableIDs, ts.Table.ID)
+	return ret
+}
+
+func buildNoRangeMulIndexAndLookUpReader(b *executorBuilder, v *plannercore.PhysicalMulIndexAndLookUpReader) (*MulIndexAndLookUpExecutor, error) {
+	indexReqs := make([]*tipb.DAGRequest, 0, 2)
+	indexStreamings := make([]bool, 0, 2)
+	indices := make([]*model.IndexInfo, 0, 2)
+	keepOrders := make([]bool, 0, 2)
+	descs := make([]bool, 0, 2)
+	for i := 0; i < len(v.IndexPlans); i++ {
+		tempReq, tempStreaming, err := b.constructDAGReq([]plannercore.PhysicalPlan{v.IndexPlans[i]})
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		is := v.IndexPlans[i].(*plannercore.PhysicalIndexScan)
+		keepOrders = append(keepOrders, is.KeepOrder)
+		descs = append(descs, is.Desc)
+		tempReq.OutputOffsets = []uint32{uint32(len(is.Index.Columns))}
+		// TODO should read code to ensure behavior
+		collectIndex := false
+		tempReq.CollectRangeCounts = &collectIndex
+		indexReqs = append(indexReqs, tempReq)
+		indexStreamings = append(indexStreamings, tempStreaming)
+		indices = append(indices, is.Index)
+
+	}
+
+	tableReq, tableStreaming, err := b.constructDAGReq(v.TablePlans)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	is := v.IndexPlans[0].(*plannercore.PhysicalIndexScan)
+	table, _ := b.is.TableByID(is.Table.ID)
+	for i := 0; i < v.Schema().Len(); i++ {
+		tableReq.OutputOffsets = append(tableReq.OutputOffsets, uint32(i))
+	}
+
+	ts := v.TablePlans[0].(*plannercore.PhysicalTableScan)
+
+	e := &MulIndexAndLookUpExecutor{
+		baseExecutor: newBaseExecutor(b.ctx, v.Schema(), v.ExplainID()),
+		dagPBs: indexReqs,
+		physicalTableID: is.Table.ID,
+		table:	table,
+		indices: indices,
+		keepOrder: keepOrders,
+		descs: descs,
+		tableRequest: tableReq,
+		columns: ts.Columns,
+		indexStreamings: indexStreamings,
+		tableStreaming: tableStreaming,
+		dataReaderBuilder: &dataReaderBuilder{executorBuilder:b},
+		idxPlans: v.IndexPlans,
+		tablePlans: v.TablePlans,
+	}
+	log.Print("#In Build MulIndexAndLookUpReader#builder.go:1766")
+
+	collectTable := false
+	e.tableRequest.CollectRangeCounts = &collectTable
+	// TODO now not ensure behavior, we set all indexcollect is false.
+	e.feedback = statistics.NewQueryFeedback(0, nil, 0, ts.Desc)
+	e.feedback.Invalidate()
+
+	if cols, ok := v.Schema().TblID2Handle[is.Table.ID]; ok {
+		e.handleIdx = cols[0].Index
+	}
+
+	return e,nil
+}
+
+func (b *executorBuilder) buildMulIndexAndLookUpReader(v *plannercore.PhysicalMulIndexAndLookUpReader) *MulIndexAndLookUpExecutor {
+	log.Print("#In Build buildNoRangeMulIndexAndLookUpReader#builder.go:1833")
+	ret, err := buildNoRangeMulIndexAndLookUpReader(b, v)
+	if err != nil {
+		b.err = errors.Trace(err)
+		return nil
+	}
+
+	// set the range for every index
+	ret.rangess = make([][]*ranger.Range,0,2)
+
+	metrics.ExecutorCounter.WithLabelValues("MulIndexAndLookUpExecutor").Inc()
+	sctx := b.ctx.GetSessionVars().StmtCtx
+	for i := 0; i < len(v.IndexPlans); i++ {
+		is := v.IndexPlans[i].(*plannercore.PhysicalIndexScan)
+		tempRanges := is.Ranges
+		ret.rangess = append(ret.rangess, tempRanges)
+		sctx.IndexIDs = append(sctx.IndexIDs,is.Index.ID)
+	}
+	ts := v.TablePlans[0].(*plannercore.PhysicalTableScan)
 	sctx.TableIDs = append(sctx.TableIDs, ts.Table.ID)
 	return ret
 }
