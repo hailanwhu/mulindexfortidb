@@ -85,6 +85,14 @@ type lookupTableTask struct {
 	memTracker *memory.Tracker
 }
 
+type fetchHandleTask struct {
+	handles []int64
+	doneCh chan error
+	// bellow, maybe use??
+	rowIdx  []int
+	indexOrder map[int64]int
+}
+
 func (task *lookupTableTask) Len() int {
 	return len(task.rows)
 }
@@ -242,6 +250,9 @@ type MulIndexAndLookUpExecutor struct {
 	resultCh   chan *lookupTableTask
 	resultCurr *lookupTableTask
 
+	// use it to let indexworker andworker tableworker know 'finish' and exit
+	finished    chan struct{}
+
 	// now just set it invalid
 	feedback   *statistics.QueryFeedback
 
@@ -285,12 +296,50 @@ func (e *MulIndexAndLookUpExecutor) Open(ctx context.Context) error {
 	return errors.Trace(err)
 }
 
-func (e *MulIndexAndLookUpExecutor) open(ctx context.Context, kvRanges [][]kv.KeyRange) error {
+func (e *MulIndexAndLookUpExecutor) open(ctx context.Context, kvRangess [][]kv.KeyRange) error {
 	log.Print("#In Build open#distsql.go:289")
+	// TODO memory tracker
+
+	e.finished = make(chan struct{})
+	e.resultCh = make(chan *lookupTableTask, atomic.LoadInt32(&LookupTableTaskChannelSize))
+
+
+    // TODO corCol
+
+	// andWorker will write to workCh and tableWorker will read from workCh,
+	// so fetching index and getting table data can run concurrently.
+	workCh := make(chan *lookupTableTask, 1)
+	fetchChs := make([]chan *fetchHandleTask,len(kvRangess))
+
+	go e.startAndWorker(ctx, workCh,fetchChs)
+
+	for i := 0; i < len(kvRangess); i++ {
+		go e.startIndexWorker(ctx, kvRangess[i], fetchChs[i])
+	}
+
+	go e.startTableWorker(ctx, workCh)
+
 	return nil
 }
 
-// IndexReaderExecutor sends dag request and reads index data from kv layer.
+// (1)do sort handles and do 'and' operation
+// (2)build lookuptask, and send to tableWorker
+func (e *MulIndexAndLookUpExecutor) startAndWorker(ctx context.Context,workCh chan<- *lookupTableTask, fetchCh []chan *fetchHandleTask) {
+
+}
+
+// according to kvrange to get handle
+func (e *MulIndexAndLookUpExecutor) startIndexWorker(ctx context.Context, kvRanges []kv.KeyRange, fetch chan<- *fetchHandleTask) {
+
+}
+
+// according handles to get rows
+func (e *MulIndexAndLookUpExecutor) startTableWorker(ctx context.Context, workCh <-chan *lookupTableTask) {
+
+}
+
+
+	// IndexReaderExecutor sends dag request and reads index data from kv layer.
 type IndexReaderExecutor struct {
 	baseExecutor
 
