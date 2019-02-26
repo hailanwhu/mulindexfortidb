@@ -1776,7 +1776,7 @@ func buildNoRangeMulIndexAndLookUpReader(b *executorBuilder, v *plannercore.Phys
 		is := v.IndexPlans[i].(*plannercore.PhysicalIndexScan)
 		keepOrders = append(keepOrders, is.KeepOrder)
 		descs = append(descs, is.Desc)
-		tempReq.OutputOffsets = []uint32{uint32(len(is.Index.Columns))}
+		tempReq.OutputOffsets = []uint32{uint32(len(is.Index.Columns)-1)}
 		// TODO should read code to ensure behavior
 		collectIndex := false
 		tempReq.CollectRangeCounts = &collectIndex
@@ -1804,7 +1804,7 @@ func buildNoRangeMulIndexAndLookUpReader(b *executorBuilder, v *plannercore.Phys
 		physicalTableID: is.Table.ID,
 		table:	table,
 		indices: indices,
-		keepOrder: keepOrders,
+		keepOrders: keepOrders,
 		descs: descs,
 		tableRequest: tableReq,
 		columns: ts.Columns,
@@ -1812,7 +1812,7 @@ func buildNoRangeMulIndexAndLookUpReader(b *executorBuilder, v *plannercore.Phys
 		tableStreaming: tableStreaming,
 		dataReaderBuilder: &dataReaderBuilder{executorBuilder:b},
 		idxPlans: v.IndexPlans,
-		tablePlans: v.TablePlans,
+		tblPlans: v.TablePlans,
 	}
 	log.Print("#In Build MulIndexAndLookUpReader#builder.go:1766")
 
@@ -1825,6 +1825,9 @@ func buildNoRangeMulIndexAndLookUpReader(b *executorBuilder, v *plannercore.Phys
 	if cols, ok := v.Schema().TblID2Handle[is.Table.ID]; ok {
 		e.handleIdx = cols[0].Index
 	}
+
+	// TODO see startIndexWorker
+	e.runtimeStats = nil
 
 	return e,nil
 }

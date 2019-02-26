@@ -85,13 +85,13 @@ type lookupTableTask struct {
 	memTracker *memory.Tracker
 }
 
-type fetchHandleTask struct {
-	handles []int64
-	doneCh chan error
-	// bellow, maybe use??
-	rowIdx  []int
-	indexOrder map[int64]int
-}
+//type fetchHandleTask struct {
+//	handles []int64
+//	doneCh chan error
+//	// bellow, maybe use??
+//	rowIdx  []int
+//	indexOrder map[int64]int
+//}
 
 func (task *lookupTableTask) Len() int {
 	return len(task.rows)
@@ -218,6 +218,27 @@ func rebuildIndexRanges(ctx sessionctx.Context, is *plannercore.PhysicalIndexSca
 	return ranges, err
 }
 
+/*
+  tableWorker1       tableWorker2    tableWorker3
+       ^                ^                ^
+       |                |                |
+	   |                |                |
+	   |                |                |
+	   __________________________________
+						 ^
+						 |
+						 |
+						 |
+						andWoker  // indexWorkers are all finished
+       ____________________________________
+     	^                ^                ^
+		|				 |				  |
+		|				 |                |
+		|                |                |
+Index[1]Worker   Index[2]Worker ... Index[n]Worker
+
+ */
+
 // Like IndexLookUpExecutor, but some fields become array.
 type MulIndexAndLookUpExecutor struct {
 	baseExecutor
@@ -225,7 +246,7 @@ type MulIndexAndLookUpExecutor struct {
 	table	table.Table
 	indices	[]*model.IndexInfo
 	physicalTableID	int64
-	keepOrder	[]bool
+	keepOrders	[]bool
 	descs	[]bool
 	rangess          [][]*ranger.Range
 	dagPBs	[]*tipb.DAGRequest
@@ -239,7 +260,7 @@ type MulIndexAndLookUpExecutor struct {
 	*dataReaderBuilder
 
 	idxPlans	[]plannercore.PhysicalPlan
-	tablePlans []plannercore.PhysicalPlan
+	tblPlans []plannercore.PhysicalPlan
 
 	// first 's' for index, second 's' for column
 	idxColss [][]*expression.Column
@@ -265,6 +286,9 @@ type MulIndexAndLookUpExecutor struct {
 	// corColInTblSide bool
 	// corColInAccess  bool
 
+	idxWorkerWg sync.WaitGroup
+	tblWorkerWg sync.WaitGroup
+	andWokerWg sync.WaitGroup
 
 }
 
@@ -309,13 +333,16 @@ func (e *MulIndexAndLookUpExecutor) open(ctx context.Context, kvRangess [][]kv.K
 	// andWorker will write to workCh and tableWorker will read from workCh,
 	// so fetching index and getting table data can run concurrently.
 	workCh := make(chan *lookupTableTask, 1)
-	fetchChs := make([]chan *fetchHandleTask,len(kvRangess))
+	fetchCh := make(chan *lookupTableTask,len(kvRangess))
 
-	go e.startAndWorker(ctx, workCh,fetchChs)
+	go e.startAndWorker(ctx, workCh,fetchCh,len(kvRangess))
 
 	for i := 0; i < len(kvRangess); i++ {
-		go e.startIndexWorker(ctx, kvRangess[i], fetchChs[i])
+		e.idxWorkerWg.Add(1)
+		go e.startIndexWorker(ctx, kvRangess[i], fetchCh,i)
 	}
+	//make sure all indexWorker finish
+	e.idxWorkerWg.Done()
 
 	go e.startTableWorker(ctx, workCh)
 
@@ -324,20 +351,265 @@ func (e *MulIndexAndLookUpExecutor) open(ctx context.Context, kvRangess [][]kv.K
 
 // (1)do sort handles and do 'and' operation
 // (2)build lookuptask, and send to tableWorker
-func (e *MulIndexAndLookUpExecutor) startAndWorker(ctx context.Context,workCh chan<- *lookupTableTask, fetchCh []chan *fetchHandleTask) {
+func (e *MulIndexAndLookUpExecutor) startAndWorker(ctx context.Context,workCh chan<- *lookupTableTask, fetchCh <-chan *lookupTableTask,total int) {
+	worker := &andWorkerForMulIndex{
+		fetchCh: fetchCh,
+		workCh: workCh,
+		handles: make([][]int64,2,5),
+	}
+
+	e.andWokerWg.Add(1)
+	go func() {
+		worker.fetchLoop(total)
+		worker.getFinalHanles()
+		e.andWokerWg.Done()
+	}()
+	//e.andWokerWg.Done()
+	e.andWokerWg.Wait()
 
 }
 
 // according to kvrange to get handle
-func (e *MulIndexAndLookUpExecutor) startIndexWorker(ctx context.Context, kvRanges []kv.KeyRange, fetch chan<- *fetchHandleTask) {
+func (e *MulIndexAndLookUpExecutor) startIndexWorker(ctx context.Context, kvRanges []kv.KeyRange, fetchCh chan<- *lookupTableTask,which int) error{
+	// TODO
+	if e.runtimeStats != nil {
+		collExec := true
+		e.dagPBs[which].CollectExecutionSummaries = &collExec
+	}
 
+	var builder distsql.RequestBuilder
+	kvReq, err := builder.SetKeyRanges(kvRanges).
+		SetDAGRequest(e.dagPBs[which]).
+		SetDesc(e.descs[which]).
+		SetKeepOrder(e.keepOrders[which]).
+		SetStreaming(e.indexStreamings[which]).
+		SetFromSessionVars(e.ctx.GetSessionVars()).
+		Build()
+
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	result, err := distsql.SelectWithRuntimeStats(ctx, e.ctx, kvReq, []*types.FieldType{types.NewFieldType(mysql.TypeLonglong)}, e.feedback, getPhysicalPlanIDs([]plannercore.PhysicalPlan{e.idxPlans[which]}))
+
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	result.Fetch(ctx)
+	worker := &indexWorkerForMulIndex{
+		fetchCh:       fetchCh,
+		finished:     e.finished,
+		resultCh:     e.resultCh,
+		keepOrder:    e.keepOrders[which],
+		batchSize:    e.maxChunkSize,
+		maxBatchSize: e.ctx.GetSessionVars().IndexLookupSize,
+		maxChunkSize: e.maxChunkSize,
+	}
+
+	if worker.batchSize > worker.maxBatchSize {
+		worker.batchSize = worker.maxBatchSize
+	}
+
+	// now have mul-indexworker,we change this to open()
+	// e.idxWorkerWg.Add(1)
+	go func(){
+		ctx1, cancel := context.WithCancel(ctx)
+		count, err := worker.fetchHandles(ctx1, result, which)
+		if err != nil {
+			e.feedback.Invalidate()
+		}
+		cancel()
+		if err := result.Close(); err != nil {
+			log.Error("close Select result failed:", errors.ErrorStack(err))
+		}
+		if e.runtimeStats != nil {
+			copStats := e.ctx.GetSessionVars().StmtCtx.RuntimeStatsColl.GetRootStats(e.idxPlans[len(e.idxPlans)-1].ExplainID())
+			copStats.SetRowNum(count)
+			copStats = e.ctx.GetSessionVars().StmtCtx.RuntimeStatsColl.GetRootStats(e.tblPlans[0].ExplainID())
+			copStats.SetRowNum(count)
+		}
+		e.ctx.StoreQueryFeedback(e.feedback)
+		//close(fetchCh)
+		// TODO can close resultCh????
+		// close(e.resultCh)
+		// e.idxWorkerWg.Done()
+	}()
+
+	return nil
 }
 
 // according handles to get rows
 func (e *MulIndexAndLookUpExecutor) startTableWorker(ctx context.Context, workCh <-chan *lookupTableTask) {
 
 }
+// andWorkerForMulIndex
+type andWorkerForMulIndex struct {
+	fetchCh <-chan *lookupTableTask
+	finished <-chan struct{}
+	// to store all indexWoker return handles
+	workCh chan<- *lookupTableTask
+	handles[][] int64
 
+
+
+}
+
+//type int64arr []int64
+//func (a int64arr) Len() int { return len(a) }
+//func (a int64arr) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
+//func (a int64arr) Less(i, j int) bool { return a[i] < a[j] }
+
+func (w *andWorkerForMulIndex) getFinalHanles() {
+	log.Print("#In getFinalHandles #distsql.go:464")
+	for i := 0; i < len(w.handles); i++ {
+        //sort.Sort(w.handles[i][:])
+		sort.Slice(w.handles[i][:], func(m, n int) bool { return w.handles[i][m] < w.handles[i][n]})
+		log.Print(w.handles[i][:])
+	}
+
+}
+
+func (w *andWorkerForMulIndex) fetchLoop(total int) {
+	log.Print("#In fetchLoop #distsql.go:474")
+	var task *lookupTableTask
+	var ok bool
+	for {
+		if total == 0{
+			log.Print("in for0")
+			log.Print(w.handles)
+			return
+		}
+		log.Print("in for")
+		select {
+		case task, ok = <-w.fetchCh:
+			if !ok {
+				log.Print("in for1")
+				return
+			}
+			handles,which := w.fetchHandles(task)
+			log.Print(handles)
+			log.Print(which)
+			// means someone has finished
+			if len(handles) == 0 {
+				total--
+				//continue
+			}
+			if w.handles[which] == nil {
+				w.handles[which] = make([]int64,0,64)
+			}
+			w.handles[which] = append(w.handles[which],handles...)
+		case <-w.finished:
+			log.Print("in for2")
+			return
+		}
+	}
+	//sort.Int
+
+}
+
+func (w *andWorkerForMulIndex) fetchHandles(task *lookupTableTask) ([]int64, int){
+	return task.handles,task.cursor
+}
+
+// indexWorkerForMulIndex
+type indexWorkerForMulIndex struct {
+	fetchCh chan<- *lookupTableTask
+	finished <-chan struct{}
+	resultCh  chan<- *lookupTableTask
+	keepOrder bool
+	batchSize int
+	maxBatchSize int
+	maxChunkSize int
+}
+
+// fetchHandles fetches a batch of handles from index data and builds the index lookup tasks.
+// The tasks are sent to workCh to be further processed by tableWorker, and sent to e.resultCh
+// at the same time to keep data ordered.
+func (w *indexWorkerForMulIndex) fetchHandles(ctx context.Context, result distsql.SelectResult,which int) (count int64, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			buf := make([]byte, 4096)
+			stackSize := runtime.Stack(buf, false)
+			buf = buf[:stackSize]
+			log.Errorf("indexWorker panic stack is:\n%s", buf)
+			err4Panic := errors.Errorf("%v", r)
+			doneCh := make(chan error, 1)
+			doneCh <- err4Panic
+			w.resultCh <- &lookupTableTask{
+				doneCh: doneCh,
+			}
+			if err != nil {
+				err = errors.Trace(err4Panic)
+			}
+		}
+	}()
+	chk := chunk.NewChunkWithCapacity([]*types.FieldType{types.NewFieldType(mysql.TypeLonglong)}, w.maxChunkSize)
+	for {
+		handles, err := w.extractTaskHandles(ctx, chk, result)
+		if err != nil {
+			doneCh := make(chan error, 1)
+			doneCh <- errors.Trace(err)
+			w.resultCh <- &lookupTableTask{
+				doneCh: doneCh,
+			}
+			return count, err
+		}
+		if len(handles) == 0 {
+			return count, nil
+		}
+		count += int64(len(handles))
+		task := w.buildTableTask(handles,which)
+		select {
+		case <-ctx.Done():
+			return count, nil
+		case <-w.finished:
+			return count, nil
+		case w.fetchCh <- task:
+			//w.resultCh <- task
+		}
+	}
+}
+
+
+func (w *indexWorkerForMulIndex) buildTableTask(handles []int64, which int) *lookupTableTask {
+	var indexOrder map[int64]int
+	if w.keepOrder {
+		// Save the index order.
+		indexOrder = make(map[int64]int, len(handles))
+		for i, h := range handles {
+			indexOrder[h] = i
+		}
+	}
+	task := &lookupTableTask{
+		handles:    handles,
+		indexOrder: indexOrder,
+		cursor:	which, // at this stage, it is for which index
+	}
+	task.doneCh = make(chan error, 1)
+	return task
+}
+
+func (w *indexWorkerForMulIndex) extractTaskHandles(ctx context.Context, chk *chunk.Chunk, idxResult distsql.SelectResult) (handles []int64, err error) {
+	handles = make([]int64, 0, w.batchSize)
+	for len(handles) < w.batchSize {
+		err = errors.Trace(idxResult.Next(ctx, chk))
+		if err != nil {
+			return handles, err
+		}
+		if chk.NumRows() == 0 {
+			return handles, nil
+		}
+		for i := 0; i < chk.NumRows(); i++ {
+			handles = append(handles, chk.GetRow(i).GetInt64(0))
+		}
+	}
+	w.batchSize *= 2
+	if w.batchSize > w.maxBatchSize {
+		w.batchSize = w.maxBatchSize
+	}
+	return handles, nil
+}
 
 	// IndexReaderExecutor sends dag request and reads index data from kv layer.
 type IndexReaderExecutor struct {
@@ -732,6 +1004,8 @@ type indexWorker struct {
 	maxBatchSize int
 	maxChunkSize int
 }
+
+
 
 // fetchHandles fetches a batch of handles from index data and builds the index lookup tasks.
 // The tasks are sent to workCh to be further processed by tableWorker, and sent to e.resultCh
