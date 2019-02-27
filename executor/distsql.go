@@ -293,11 +293,13 @@ type MulIndexAndLookUpExecutor struct {
 }
 
 func (e *MulIndexAndLookUpExecutor) Close() error {
+	log.Print("CALL Close")
 	return nil
 }
 // Next implements Exec Next interface.
 func (e *MulIndexAndLookUpExecutor) Next(ctx context.Context, req *chunk.RecordBatch) error {
 
+	log.Print("In Mul Next0")
 	req.Reset()
 	for {
 		resultTask, err := e.getResultTask()
@@ -309,6 +311,7 @@ func (e *MulIndexAndLookUpExecutor) Next(ctx context.Context, req *chunk.RecordB
 		}
 		log.Print("In Mul Next")
 		for resultTask.cursor < len(resultTask.rows) {
+			log.Print(resultTask.rows[resultTask.cursor].GetInt64(1))
 			req.AppendRow(resultTask.rows[resultTask.cursor])
 			resultTask.cursor++
 			if req.NumRows() >= e.maxChunkSize {
@@ -316,6 +319,7 @@ func (e *MulIndexAndLookUpExecutor) Next(ctx context.Context, req *chunk.RecordB
 			}
 		}
 	}
+	log.Print("exit from Next")
 	return nil
 }
 
@@ -402,7 +406,9 @@ func (e *MulIndexAndLookUpExecutor) startAndWorker(ctx context.Context,workCh ch
 	e.andWokerWg.Add(1)
 	go func() {
 		worker.fetchLoop(total)
-		worker.getFinalHanles()
+		worker.getFinalHanles(ctx)
+		close(workCh) //why ??
+		close(e.resultCh)
 		e.andWokerWg.Done()
 	}()
 	//e.andWokerWg.Done()
@@ -541,7 +547,7 @@ type andWorkerForMulIndex struct {
 //func (a int64arr) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
 //func (a int64arr) Less(i, j int) bool { return a[i] < a[j] }
 
-func (w *andWorkerForMulIndex) getFinalHanles() {
+func (w *andWorkerForMulIndex) getFinalHanles(ctx context.Context,) {
 	log.Print("#In getFinalHandles #distsql.go:464")
 	for i := 0; i < len(w.handles); i++ {
         //sort.Sort(w.handles[i][:])
@@ -630,8 +636,8 @@ func (w *andWorkerForMulIndex) getFinalHanles() {
 		handles = append(handles, finalHandles[i])
 		task := w.buildTableTask(handles)
 		select {
-		//case <-ctx.Done():
-		//	return count, nil
+		case <-ctx.Done():
+			return
 		case <-w.finished:
 			return //count, nil
 		case w.workCh <- task:
