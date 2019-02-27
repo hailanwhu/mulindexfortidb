@@ -295,10 +295,50 @@ type MulIndexAndLookUpExecutor struct {
 func (e *MulIndexAndLookUpExecutor) Close() error {
 	return nil
 }
-
+// Next implements Exec Next interface.
 func (e *MulIndexAndLookUpExecutor) Next(ctx context.Context, req *chunk.RecordBatch) error {
+
+	req.Reset()
+	for {
+		resultTask, err := e.getResultTask()
+		if err != nil {
+			return errors.Trace(err)
+		}
+		if resultTask == nil {
+			return nil
+		}
+		log.Print("In Mul Next")
+		for resultTask.cursor < len(resultTask.rows) {
+			req.AppendRow(resultTask.rows[resultTask.cursor])
+			resultTask.cursor++
+			if req.NumRows() >= e.maxChunkSize {
+				return nil
+			}
+		}
+	}
 	return nil
 }
+
+func (e *MulIndexAndLookUpExecutor) getResultTask() (*lookupTableTask, error) {
+	if e.resultCurr != nil && e.resultCurr.cursor < len(e.resultCurr.rows) {
+		return e.resultCurr, nil
+	}
+	task, ok := <-e.resultCh
+	if !ok {
+		return nil, nil
+	}
+	if err := <-task.doneCh; err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	// Release the memory usage of last task before we handle a new task.
+	if e.resultCurr != nil {
+		//e.resultCurr.memTracker.Consume(-e.resultCurr.memUsage)
+	}
+	e.resultCurr = task
+	return e.resultCurr, nil
+}
+
 
 func (e *MulIndexAndLookUpExecutor) Open(ctx context.Context) error {
 	kvRangess := make([][]kv.KeyRange,0,2)
@@ -355,6 +395,7 @@ func (e *MulIndexAndLookUpExecutor) startAndWorker(ctx context.Context,workCh ch
 	worker := &andWorkerForMulIndex{
 		fetchCh: fetchCh,
 		workCh: workCh,
+		resultCh: e.resultCh,
 		handles: make([][]int64,2,5),
 	}
 
@@ -441,14 +482,54 @@ func (e *MulIndexAndLookUpExecutor) startIndexWorker(ctx context.Context, kvRang
 
 // according handles to get rows
 func (e *MulIndexAndLookUpExecutor) startTableWorker(ctx context.Context, workCh <-chan *lookupTableTask) {
-
+	lookupConcurrencyLimit := e.ctx.GetSessionVars().IndexLookupConcurrency
+	e.tblWorkerWg.Add(lookupConcurrencyLimit)
+	for i := 0; i < lookupConcurrencyLimit; i++ {
+		worker := &tableWorkerForMulIndex{
+			workCh:         workCh,
+			finished:       e.finished,
+			buildTblReader: e.buildTableReader,
+			keepOrder:      false,//e.keepOrder,
+			handleIdx:      e.handleIdx,
+			isCheckOp:      false,//e.isCheckOp,
+			memTracker:     memory.NewTracker("tableWorker", -1),
+		}
+		//worker.memTracker.AttachTo(e.memTracker)
+		ctx1, cancel := context.WithCancel(ctx)
+		go func() {
+			worker.pickAndExecTask(ctx1)
+			cancel()
+			e.tblWorkerWg.Done()
+		}()
+	}
 }
+
+func (e *MulIndexAndLookUpExecutor) buildTableReader(ctx context.Context, handles []int64) (Executor, error) {
+	tableReaderExec := &TableReaderExecutor{
+		baseExecutor:    newBaseExecutor(e.ctx, e.schema, e.id+"_tableReader"),
+		table:           e.table,
+		physicalTableID: e.physicalTableID,
+		dagPB:           e.tableRequest,
+		streaming:       e.tableStreaming,
+		feedback:        statistics.NewQueryFeedback(0, nil, 0, false),
+		//corColInFilter:  nil,//e.corColInTblSide,
+		plans:           e.tblPlans,
+	}
+	tableReader, err := e.dataReaderBuilder.buildTableReaderFromHandles(ctx, tableReaderExec, handles)
+	if err != nil {
+		log.Error(err)
+		return nil, errors.Trace(err)
+	}
+	return tableReader, nil
+}
+
 // andWorkerForMulIndex
 type andWorkerForMulIndex struct {
 	fetchCh <-chan *lookupTableTask
 	finished <-chan struct{}
 	// to store all indexWoker return handles
 	workCh chan<- *lookupTableTask
+	resultCh chan<- *lookupTableTask
 	handles[][] int64
 
 
@@ -540,8 +621,46 @@ func (w *andWorkerForMulIndex) getFinalHanles() {
 	}
 	log.Print(finalHandles)
 
-	//send finalHandles to tableTaskReader
+	//according to handlesCount to splict array and get task send to tableWorker
+	handlesCount := len(finalHandles)
+	log.Print(handlesCount)
+	for i := 0; i < handlesCount; i++ {
+		log.Printf("send %d",i)
+		handles := make([]int64,0,1)
+		handles = append(handles, finalHandles[i])
+		task := w.buildTableTask(handles)
+		select {
+		//case <-ctx.Done():
+		//	return count, nil
+		case <-w.finished:
+			return //count, nil
+		case w.workCh <- task:
+			w.resultCh <- task
+		default:
+			log.Print("finishGetFinalHandle")
+			return
+		}
 
+	}
+
+
+}
+
+func (w *andWorkerForMulIndex) buildTableTask(handles []int64) *lookupTableTask {
+	var indexOrder map[int64]int
+	/*if w.keepOrder {
+		// Save the index order.
+		indexOrder = make(map[int64]int, len(handles))
+		for i, h := range handles {
+			indexOrder[h] = i
+		}
+	}*/
+	task := &lookupTableTask{
+		handles:    handles,
+		indexOrder: indexOrder,
+	}
+	task.doneCh = make(chan error, 1)
+	return task
 }
 
 func (w *andWorkerForMulIndex) fetchLoop(total int) {
@@ -648,6 +767,113 @@ func (w *indexWorkerForMulIndex) fetchHandles(ctx context.Context, result distsq
 			//w.resultCh <- task
 		}
 	}
+}
+
+// tableWorker is used by IndexLookUpExecutor to maintain table lookup background goroutines.
+type tableWorkerForMulIndex struct {
+	workCh         <-chan *lookupTableTask
+	finished       <-chan struct{}
+	buildTblReader func(ctx context.Context, handles []int64) (Executor, error)
+	keepOrder      bool
+	handleIdx      int
+
+	// memTracker is used to track the memory usage of this executor.
+	memTracker *memory.Tracker
+
+	// isCheckOp is used to determine whether we need to check the consistency of the index data.
+	isCheckOp bool
+}
+
+// pickAndExecTask picks tasks from workCh, and execute them.
+func (w *tableWorkerForMulIndex) pickAndExecTask(ctx context.Context) {
+	var task *lookupTableTask
+	var ok bool
+	defer func() {
+		if r := recover(); r != nil {
+			buf := make([]byte, 4096)
+			stackSize := runtime.Stack(buf, false)
+			buf = buf[:stackSize]
+			log.Errorf("tableWorker panic stack is:\n%s", buf)
+			task.doneCh <- errors.Errorf("%v", r)
+		}
+	}()
+	for {
+		// Don't check ctx.Done() on purpose. If background worker get the signal and all
+		// exit immediately, session's goroutine doesn't know this and still calling Next(),
+		// it may block reading task.doneCh forever.
+		select {
+		case task, ok = <-w.workCh:
+			if !ok {
+				return
+			}
+		case <-w.finished:
+			return
+		}
+		err := w.executeTask(ctx, task)
+		task.doneCh <- errors.Trace(err)
+	}
+}
+
+func (w *tableWorkerForMulIndex) executeTask(ctx context.Context, task *lookupTableTask) error {
+	log.Print(task.handles)
+	tableReader, err := w.buildTblReader(ctx, task.handles)
+	if err != nil {
+		log.Error(err)
+		return errors.Trace(err)
+	}
+	defer terror.Call(tableReader.Close)
+
+	// TODO later will finish memTracker
+	//task.memTracker = w.memTracker
+	//memUsage := int64(cap(task.handles) * 8)
+	//task.memUsage = memUsage
+	//task.memTracker.Consume(memUsage)
+	handleCnt := len(task.handles)
+	task.rows = make([]chunk.Row, 0, handleCnt)
+	for {
+		chk := tableReader.newFirstChunk()
+		err = tableReader.Next(ctx, chunk.NewRecordBatch(chk))
+		if err != nil {
+			log.Error(err)
+			return errors.Trace(err)
+		}
+		if chk.NumRows() == 0 {
+			break
+		}
+		//memUsage = chk.MemoryUsage()
+		//task.memUsage += memUsage
+		//task.memTracker.Consume(memUsage)
+		iter := chunk.NewIterator4Chunk(chk)
+		for row := iter.Begin(); row != iter.End(); row = iter.Next() {
+			task.rows = append(task.rows, row)
+		}
+	}
+	//memUsage = int64(cap(task.rows)) * int64(unsafe.Sizeof(chunk.Row{}))
+	//task.memUsage += memUsage
+	//task.memTracker.Consume(memUsage)
+	if w.keepOrder {
+		task.rowIdx = make([]int, 0, len(task.rows))
+		for i := range task.rows {
+			handle := task.rows[i].GetInt64(w.handleIdx)
+			task.rowIdx = append(task.rowIdx, task.indexOrder[handle])
+		}
+		//memUsage = int64(cap(task.rowIdx) * 4)
+		//task.memUsage += memUsage
+		//task.memTracker.Consume(memUsage)
+		sort.Sort(task)
+	}
+
+	if w.isCheckOp && handleCnt != len(task.rows) {
+		obtainedHandlesMap := make(map[int64]struct{}, len(task.rows))
+		for _, row := range task.rows {
+			handle := row.GetInt64(w.handleIdx)
+			obtainedHandlesMap[handle] = struct{}{}
+		}
+		return errors.Errorf("handle count %d isn't equal to value count %d, missing handles %v in a batch",
+			handleCnt, len(task.rows), GetLackHandles(task.handles, obtainedHandlesMap))
+	}
+
+	return nil
 }
 
 
