@@ -1776,7 +1776,7 @@ func buildNoRangeMulIndexAndLookUpReader(b *executorBuilder, v *plannercore.Phys
 		is := v.IndexPlans[i].(*plannercore.PhysicalIndexScan)
 		keepOrders = append(keepOrders, is.KeepOrder)
 		descs = append(descs, is.Desc)
-		tempReq.OutputOffsets = []uint32{uint32(len(is.Index.Columns)-1)}
+		tempReq.OutputOffsets = []uint32{uint32(len(is.Index.Columns))}
 		// TODO should read code to ensure behavior
 		collectIndex := false
 		tempReq.CollectRangeCounts = &collectIndex

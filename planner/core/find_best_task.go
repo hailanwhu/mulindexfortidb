@@ -767,7 +767,8 @@ func (ds *DataSource) convertToMulIndexScan(prop *property.PhysicalProperty, pat
 		}
 		is.stats = ds.stats
 		// isDoubleRead is false just because of "must be"
-		is.initSchema(ds.id, idx, false)
+		// isDoubleRead should be true, because need handle
+		is.initSchema(ds.id, idx, true)
 		indexPlans = append(indexPlans, is)
 	}
 	ts := PhysicalTableScan{

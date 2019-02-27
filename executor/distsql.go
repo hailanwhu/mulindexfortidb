@@ -493,6 +493,7 @@ func (w *andWorkerForMulIndex) fetchLoop(total int) {
 			// means someone has finished
 			if len(handles) == 0 {
 				total--
+				log.Print(total)
 				//continue
 			}
 			if w.handles[which] == nil {
