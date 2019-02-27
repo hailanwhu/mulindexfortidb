@@ -467,6 +467,80 @@ func (w *andWorkerForMulIndex) getFinalHanles() {
 		sort.Slice(w.handles[i][:], func(m, n int) bool { return w.handles[i][m] < w.handles[i][n]})
 		log.Print(w.handles[i][:])
 	}
+	log.Print(len(w.handles))
+	lengths := make([]int,0,len(w.handles))
+	curs := make([]int,0,len(w.handles))
+
+	minIndex := -1
+	minLen := math.MaxInt64
+	for i := 0; i < len(w.handles); i++ {
+		tempLen := len(w.handles[i])
+		lengths = append(lengths,tempLen)
+		if tempLen < minLen {
+			minLen = tempLen
+			minIndex = i
+		}
+		curs = append(curs,0)
+	}
+
+	if minLen == 0 {
+		// no result can be found
+		// tell finish
+		log.Print("andWorkerForMulIndex no results")
+		return
+	}
+	finalHandles := make([]int64,0,minLen)
+
+	//var minValue int64 = math.MaxInt64
+	//for i := 0; i < len(w.handles); i++ {
+	//	if w.handles[i][0] < minValue {
+	//		minValue = w.handles[i][0]
+	//		minIndex = i
+	//	}
+	//}
+
+
+	for {
+		if curs[minIndex] == lengths[minIndex] {
+			break
+		}
+		curHandle := w.handles[minIndex][curs[minIndex]]
+		canBeInFinal := true
+		someOneFinish := false
+		for i := 0; i < len(w.handles) ;i++{
+			if i == minIndex {
+				continue
+			}
+			if curs[i] == lengths[i] {
+				someOneFinish = true
+				break
+			}
+
+			if w.handles[i][curs[i]] < curHandle {
+				curs[i]++
+				for (curs[i] < lengths[i]) && (w.handles[i][curs[i]] < curHandle) {
+					curs[i]++
+				}
+				if curs[i] == lengths[i] {
+					someOneFinish = true
+					break
+				}else if w.handles[i][curs[i]] > curHandle {
+					canBeInFinal = false
+					continue
+				}
+			}
+		}
+		if someOneFinish {
+			break
+		}
+		if canBeInFinal {
+			finalHandles = append(finalHandles, w.handles[minIndex][curs[minIndex]])
+		}
+		curs[minIndex]++
+	}
+	log.Print(finalHandles)
+
+	//send finalHandles to tableTaskReader
 
 }
 
@@ -554,9 +628,13 @@ func (w *indexWorkerForMulIndex) fetchHandles(ctx context.Context, result distsq
 			w.resultCh <- &lookupTableTask{
 				doneCh: doneCh,
 			}
+			log.Print("over indexWorkerForMulIndex")
 			return count, err
 		}
 		if len(handles) == 0 {
+			log.Print("0 indexWorkerForMulIndex")
+			task := w.buildTableTask(handles,which)
+			w.fetchCh <- task
 			return count, nil
 		}
 		count += int64(len(handles))
