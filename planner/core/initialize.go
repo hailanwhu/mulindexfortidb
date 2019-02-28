@@ -84,7 +84,7 @@ const (
 	// TypeWindow is the type of Window.
 	TypeWindow = "Window"
 	// TypeMulIndexAndLookUpReader is the type of MulIndexAndLookUpReader
-	TypeMulIndexAndLookUpReader = "MulIndexAndLookUpReader"
+	TypeMulIndexAndLookUpReader = "MulIndexLookUpReader"
 )
 
 // Init initializes LogicalAggregation.
@@ -406,7 +406,7 @@ func (p PhysicalIndexJoin) Init(ctx sessionctx.Context, stats *property.StatsInf
 
 // Just because other has been init
 // TODO maybe later will change this function
-func (p PhysicalMulIndexAndLookUpReader) Init(ctx sessionctx.Context) *PhysicalMulIndexAndLookUpReader {
+func (p PhysicalMulIndexLookUpReader) Init(ctx sessionctx.Context) *PhysicalMulIndexLookUpReader {
 	p.basePhysicalPlan = newBasePhysicalPlan(ctx, TypeMulIndexAndLookUpReader, &p)
 	p.schema = p.TablePlans[0].Schema()
 	return &p

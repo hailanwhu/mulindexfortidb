@@ -49,11 +49,11 @@ var (
 	_ PhysicalPlan = &PhysicalMergeJoin{}
 	_ PhysicalPlan = &PhysicalUnionScan{}
 	_ PhysicalPlan = &PhysicalWindow{}
-	_ PhysicalPlan = &PhysicalMulIndexAndLookUpReader{}
+	_ PhysicalPlan = &PhysicalMulIndexLookUpReader{}
 )
 
 // PhysicalMulIndexAndLookUpReader
-type PhysicalMulIndexAndLookUpReader struct {
+type PhysicalMulIndexLookUpReader struct {
 	physicalSchemaProducer
 
 	//Follow two plans flat to construct executor pb.

@@ -432,12 +432,15 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 		// see copTask comments (0/1/2/3)
 		// this function also transforms the old path to new path at the 'or' conditions
 		// remember keep the the same order with ds.possibleAccessPaths
-		mulType,paths = ds.getMulTypeAndPaths()
+		mulType,paths = ds.getMulTypeAndPathsV2()
 		//mulType = 1
 	}
 	if mulType > 0 {
 		//paths = ds.possibleAccessPaths[1:]
 		log.Print(mulType)
+		if ds.tableInfo.Name.L == "t3" {
+			log.Print(mulType)
+		}
 		if ds.tableInfo.Name.L != "t3" {
 			return
 		}
@@ -472,175 +475,229 @@ func (ds *DataSource)  isTerminalArgAndIndxCol(arg expression.Expression) (bool,
 	return false,-1
 }
 
-// function args must be col and value
-func (ds *DataSource)  checkScalarFunctionIsALeaf(function *expression.ScalarFunction) bool{
-	args := function.GetArgs()
-	for i := 0; i < len(args); i++ {
-		ok ,_ := ds.isTerminalArgAndIndxCol(args[i])
-		if !ok {
-			return false
+
+
+
+
+func (ds *DataSource) getPossibleMulType() (string,int) {
+	for i := 1; i < len(ds.possibleAccessPaths); i++ {
+		if len(ds.possibleAccessPaths[i].accessConds) !=0 {
+			return "and",i
 		}
 	}
-	return true
+	return "or",-1
 }
 
+func (ds *DataSource) comeFromSameIndex(tableFilter expression.Expression) int {
+	// now we just consider scalarFunction
+	function, ok := tableFilter.(*expression.ScalarFunction)
+	// not consider now
+	if !ok {
+		//not well
+		return -1
+	}
+	if function.FuncName.L == "or" || function.FuncName.L == "and" {
+		args := function.GetArgs()
 
-// opType 0 for and
-// opType 1 for or
-func (ds *DataSource) checkConditionSatisfyMulIndex(expressionFilter expression.Expression, opType string) ([]*accessPath,bool){
-	conditions := make([]expression.Expression,0,3)
-	//switch opType {
-	//case 0:
-
-	//case 1:
-		// all condition cols are index-cols
-		// function first are 'or'
-		tempFunction,ok := expressionFilter.(*expression.ScalarFunction)
-		if !ok {
-			return nil,false
+		whichIndex1 := ds.comeFromSameIndex(args[0])
+		//maybe ugly, but not decrease useless computing
+		if whichIndex1 == -1 {
+			return -1
 		}
-		// all arg1 will save there
-
-
-		if !(tempFunction.FuncName.L == opType) {
-			return nil,false
+		whichIndex2 := ds.comeFromSameIndex(args[1])
+		if whichIndex2 == -1 {
+			return -1
 		}
-
-		for {
-			args := tempFunction.GetArgs()
-			arg0, ok := args[0].(*expression.ScalarFunction)
+		if whichIndex1 != whichIndex2 {
+			// maybe someone does not have column
+			if whichIndex1 == 0 {
+				return whichIndex2
+			}else if whichIndex2 == 0{
+				 return whichIndex1
+			} else {
+				return -1
+			}
+		}
+		return whichIndex1
+	} else { // leaf
+		args := function.GetArgs()
+		if len(args) == 0 {
+			return 0
+		}
+		tempWhich := 0
+		isFirst := true
+		for i := 0; i < len(args); i++ {
+			ok,wi := ds.isTerminalArgAndIndxCol(args[0])
 			if !ok {
-				return nil,false
+				return -1
 			}
-			if arg0.FuncName.L == opType {
-				//arg1 must leaf
-				arg1, ok := args[1].(*expression.ScalarFunction)
-				if !ok {
-					return nil,false
-				}
-				isLeaf := ds.checkScalarFunctionIsALeaf(arg1)
-				if !isLeaf {
-					return nil,false
-				}
-				conditions = append(conditions,arg1)
-				tempFunction = arg0
-				continue
-			}else {
-			   // must be leaf and can return true
-				isLeaf := ds.checkScalarFunctionIsALeaf(arg0)
-				if !isLeaf {
-					return nil,false
-				}
-
-				arg1, ok := args[1].(*expression.ScalarFunction)
-				if !ok {
-					return nil,false
-				}
-				isLeaf = ds.checkScalarFunctionIsALeaf(arg1)
-				if !isLeaf {
-					return nil,false
-				}
-				conditions = append(conditions,arg0)
-				conditions = append(conditions,arg1)
-				break
-
+			if (wi > 0) && isFirst {
+				tempWhich = wi
+			}else if (wi > 0) && (tempWhich != wi) {
+				return -1
 			}
 		}
+		return tempWhich
+	}
 
-	//}
-	// if 'or', we will do second checking, all col is index-col
-	// if so, can
-	// need a hash table to know which ,we have been added.
-	updatedPath := make([]int, len(ds.possibleAccessPaths) - 1)
-
-
-	tempPaths := make([]*accessPath,len(ds.possibleAccessPaths)-1)
-
-	if opType == "or" {
-		for i := 0 ; i < len(conditions); i++ {
-			function, _  := conditions[i].(*expression.ScalarFunction)
-			args := function.GetArgs()
-			//ds.isTerminalArgAndIndxCol(args[])
-			for j := 0; j < len(args); j++ {
-				ok,index := ds.isTerminalArgAndIndxCol(args[j])
-				//index = index - 1
-				if ok && (index > -1) {
-					if updatedPath[index-1] == 0 { //just because of index of index start from 1
-						updatedPath[index-1] = len(tempPaths)
-						path := ds.possibleAccessPaths[index]
-						path.tableFilters = make([]expression.Expression,0,1)
-						path.accessConds = []expression.Expression{conditions[i]}
-						tempPaths[index-1] = path
-						} else {
-							path := tempPaths[index]
-							// not append,need to construct new funtion 'or' two function
-							tempFunction := path.accessConds[0]
-							newFunction := expression.NewFunctionInternal(ds.ctx, "or", types.NewFieldType(mysql.TypeTiny), tempFunction,conditions[i])
-							path.accessConds = []expression.Expression{newFunction}//append(path.accessConds, conditions[i])
-							tempPaths[index-1] = path
-						}
-				}
-			}
-		}
-		}
-
-	// get new range for every path
-	// maybe not there to get new range just push it to convertMulIndex
-	// for i := 0; i < len(tempPaths); i++ {
-	//	index := updatedPath[i]
-	//	if index != 0{
-	//		indexInfo := ds.tableInfo.Indices[index]
-			/*(idxCols, colLengths := expression.IndexInfo2Cols(is.schema.Columns, is.Index)
-			if len(idxCols) == 0 {
-				return ranger.FullRange(), nil
-			}
-			res, err := ranger.DetachCondAndBuildRangeForIndex(sctx, is.AccessCondition, idxCols, colLengths)
-			if err != nil {
-				return nil, err
-			}*/
-	//	}
-	//}
-
-
-
-
-
-
-	log.Print(999)
-
-	return tempPaths,true
+	// successful
+	return 0
 }
+func (ds *DataSource) analyseAndWay(which int)(int, []*accessPath){
+	indexPath := ds.possibleAccessPaths[which]
+	for i := 0; i < len(indexPath.tableFilters); i++ {
+		// check every table filter come from same index
+		 tableFilter := indexPath.tableFilters[i]
+		 sameIndex := ds.comeFromSameIndex(tableFilter)
+		 if sameIndex == -1 {
+		 	return 0,nil
+		 }
+	}
+	// remove useless indices
+	tempPaths := make([]*accessPath, 0, len(ds.possibleAccessPaths)-1)
+	for i := 1; i < len(ds.possibleAccessPaths); i++ {
+		if len(ds.possibleAccessPaths[i].accessConds) == 0{
+			continue
+		}
+		tempPaths = append(tempPaths, ds.possibleAccessPaths[i])
+	}
 
-func (ds *DataSource) getMulTypeAndPaths() (int, []*accessPath) {
-	if ds.tableInfo.Name.L != "t3" {
-		//log.Print("test 'or' 'and'  conditions")
+	// where t3.b >1 and t3.b <10 ,if not ,will get mulindex and
+	if len(tempPaths) == 1 {
 		return 0,nil
 	}
-	//tempPaths := ds.possibleAccessPaths[1:]
-	firstIndexPath := ds.possibleAccessPaths[1]
 
+	return 1, tempPaths
+}
 
-	if len(firstIndexPath.accessConds) ==0 {
-		if len(firstIndexPath.tableFilters) != 1 {
-			return 0,nil
-		}
-		tempPaths, ok := ds.checkConditionSatisfyMulIndex(firstIndexPath.tableFilters[0],"or")
-		if ok {
-			return 3, tempPaths
+func (ds *DataSource) curOr(tableFilter expression.Expression)([]expression.Expression,bool,[]int) {
+
+	function, ok := tableFilter.(*expression.ScalarFunction)
+	if !ok {
+		return nil,false,nil
+	}
+	if function.FuncName.L == "and" {
+		ok := ds.comeFromSameIndex(tableFilter)
+		if ok == -1 {
+			return nil,false,nil
+		}else if ok == 0{
+			//
 		}else {
-			return 0,nil
+			return []expression.Expression{tableFilter},true,[]int{ok}
 		}
-	}else {
-		// consider all double read
-		tempPaths, ok := ds.checkConditionSatisfyMulIndex(firstIndexPath.tableFilters[0],"and")
-		if ok {
-			return 1, tempPaths
+	} else if function.FuncName.L == "or" {
+		conditions := make([]expression.Expression,0,3)
+		indexIDs := make([]int,0,3)
+		args := function.GetArgs()
+		conditions1,ok,indexIDs1 := ds.curOr(args[0])
+		if !ok {
+			return nil,false,nil
+		}
+		conditions2,ok,indexIDs2 := ds.curOr(args[1])
+		if !ok {
+			return nil,false,nil
+		}
+		conditions = append(conditions,conditions1... )
+		conditions = append(conditions,conditions2... )
+		indexIDs = append(indexIDs,indexIDs1...)
+		indexIDs = append(indexIDs,indexIDs2...)
+		return conditions,true,indexIDs
+	} else { // must be leaf
+		args := function.GetArgs()
+		//ds.isTerminalArgAndIndxCol()
+		isFirst := true
+		oneIndex := -1
+		for i := 0 ; i < len(args); i++ {
+			ok,which := ds.isTerminalArgAndIndxCol(args[i])
+			if !ok {
+				return nil,false,nil
+			}
+			if isFirst && which > 0{
+				oneIndex = which
+				isFirst = false
+			}else if which > 0{
+				if oneIndex != which {
+					return nil,false,nil
+				}
+
+			}else {
+
+			}
+		}
+		return []expression.Expression{tableFilter},true,[]int{oneIndex}
+
+	}
+
+	return nil,false,nil
+}
+
+func (ds *DataSource) analyseOrWay(tableFilter expression.Expression)(int, []*accessPath){
+	conditions := make([]expression.Expression,0,3)
+	indexIDs := make([]int,0,3)
+	tempFunction,ok := tableFilter.(*expression.ScalarFunction)
+	if !ok {
+		return 0,nil
+	}
+	if tempFunction.FuncName.L != "or" {
+		return 0,nil
+	}
+	args := tempFunction.GetArgs()
+	conditions1,ok,indexIDs1 := ds.curOr(args[0])
+	if !ok {
+		return 0,nil
+	}
+	conditions2,ok,indexIDs2 := ds.curOr(args[1])
+	if !ok {
+	return 0,nil
+	}
+	conditions = append(conditions,conditions1... )
+	conditions = append(conditions,conditions2... )
+	indexIDs = append(indexIDs,indexIDs1...)
+	indexIDs = append(indexIDs,indexIDs2...)
+	updatedPath := make([]int, len(ds.possibleAccessPaths) - 1)
+	tempPaths := make([]*accessPath,len(ds.possibleAccessPaths)-1)
+	if ds.tableInfo.Name.L == "t3" {
+		log.Print(999)
+	}
+	log.Print(len(conditions))
+	log.Print(indexIDs)
+	for i := 0 ; i < len(conditions); i++ {
+		if updatedPath[indexIDs[i]-1] == 0 {
+			updatedPath[indexIDs[i]-1] = len(tempPaths)
+			path := ds.possibleAccessPaths[indexIDs[i]]
+			path.tableFilters = make([]expression.Expression,0,1)
+			path.accessConds = []expression.Expression{conditions[i]}
+			tempPaths[indexIDs[i]-1] = path
 		}else {
-			return 0,nil
+			path := tempPaths[indexIDs[i]-1]
+			tempFunction := path.accessConds[0]
+			newFunction := expression.NewFunctionInternal(ds.ctx, "or", types.NewFieldType(mysql.TypeTiny), tempFunction,conditions[i])
+			path.accessConds = []expression.Expression{newFunction}
+			tempPaths[indexIDs[i]-1] = path
 		}
 
 	}
-	//return 0,nil
+	return 3,tempPaths
+}
+
+func (ds *DataSource) getMulTypeAndPathsV2() (int, []*accessPath){
+	//check can be or and
+	if ds.tableInfo.Name.L == "t3" {
+		log.Print("t3333")
+	}
+	mulType,which := ds.getPossibleMulType()
+	switch mulType {
+		case "and":
+			return ds.analyseAndWay(which)
+		case "or":
+
+			firstIndexPath := ds.possibleAccessPaths[1]
+			if len(firstIndexPath.tableFilters) != 1 {
+				return 0,nil
+			}
+			return ds.analyseOrWay(firstIndexPath.tableFilters[0])
+	}
+	return 0,nil
 }
 
 func isCoveringIndex(columns []*expression.Column, indexColumns []*model.IndexColumn, pkIsHandle bool) bool {

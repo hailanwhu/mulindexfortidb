@@ -170,7 +170,7 @@ func (b *executorBuilder) build(p plannercore.Plan) Executor {
 		return b.buildIndexReader(v)
 	case *plannercore.PhysicalIndexLookUpReader:
 		return b.buildIndexLookUpReader(v)
-	case *plannercore.PhysicalMulIndexAndLookUpReader:
+	case *plannercore.PhysicalMulIndexLookUpReader:
 		return b.buildMulIndexAndLookUpReader(v)
 	case *plannercore.PhysicalWindow:
 		return b.buildWindow(v)
@@ -1762,7 +1762,7 @@ func (b *executorBuilder) buildIndexLookUpReader(v *plannercore.PhysicalIndexLoo
 	return ret
 }
 
-func buildNoRangeMulIndexAndLookUpReader(b *executorBuilder, v *plannercore.PhysicalMulIndexAndLookUpReader) (*MulIndexAndLookUpExecutor, error) {
+func buildNoRangeMulIndexAndLookUpReader(b *executorBuilder, v *plannercore.PhysicalMulIndexLookUpReader) (*MulIndexAndLookUpExecutor, error) {
 	indexReqs := make([]*tipb.DAGRequest, 0, 2)
 	indexStreamings := make([]bool, 0, 2)
 	indices := make([]*model.IndexInfo, 0, 2)
@@ -1833,7 +1833,7 @@ func buildNoRangeMulIndexAndLookUpReader(b *executorBuilder, v *plannercore.Phys
 	return e,nil
 }
 
-func (b *executorBuilder) buildMulIndexAndLookUpReader(v *plannercore.PhysicalMulIndexAndLookUpReader) *MulIndexAndLookUpExecutor {
+func (b *executorBuilder) buildMulIndexAndLookUpReader(v *plannercore.PhysicalMulIndexLookUpReader) *MulIndexAndLookUpExecutor {
 	log.Print("#In Build buildNoRangeMulIndexAndLookUpReader#builder.go:1833")
 	ret, err := buildNoRangeMulIndexAndLookUpReader(b, v)
 	if err != nil {

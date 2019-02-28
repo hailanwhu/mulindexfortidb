@@ -143,6 +143,16 @@ func (p *PhysicalIndexLookUpReader) ExplainInfo() string {
 	return ""
 }
 
+func (p *PhysicalMulIndexLookUpReader) ExplainInfo() string {
+	if p.MulType == 1 {
+		return "MulIndexAnd"
+	}
+	if p.MulType == 3 {
+		return "MulIndexOr"
+	}
+	return ""
+}
+
 // ExplainInfo implements PhysicalPlan interface.
 func (p *PhysicalUnionScan) ExplainInfo() string {
 	return string(expression.SortedExplainExpressionList(p.Conditions))
