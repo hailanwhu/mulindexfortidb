@@ -62,6 +62,8 @@ type PhysicalMulIndexAndLookUpReader struct {
 
 	indexPlans []PhysicalPlan
 	tablePlans []PhysicalPlan
+
+	MulType int
 }
 
 // PhysicalMulIndexAndLookUpReader

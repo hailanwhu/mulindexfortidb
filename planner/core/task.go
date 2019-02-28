@@ -212,7 +212,7 @@ func finishCopTask(ctx sessionctx.Context, task task) task {
 	}
 	// TODO now just test it
 	if t.mulType == 1 {
-		p := PhysicalMulIndexAndLookUpReader{IndexPlans: t.indexPlans, TablePlans: []PhysicalPlan{t.tablePlan}}.Init(ctx)
+		p := PhysicalMulIndexAndLookUpReader{IndexPlans: t.indexPlans, TablePlans: []PhysicalPlan{t.tablePlan},MulType:t.mulType}.Init(ctx)
 		p.stats = t.indexPlans[0].statsInfo()
 		newTask := &rootTask{
 			cst: 0,
@@ -223,7 +223,13 @@ func finishCopTask(ctx sessionctx.Context, task task) task {
 	} else if t.mulType == 2 {
 
 	} else if t.mulType == 3 {
-
+		p := PhysicalMulIndexAndLookUpReader{IndexPlans: t.indexPlans, TablePlans: []PhysicalPlan{t.tablePlan},MulType:t.mulType}.Init(ctx)
+		p.stats = t.indexPlans[0].statsInfo()
+		newTask := &rootTask{
+			cst: 0,
+		}
+		newTask.p = p
+		return newTask
 	}
 
 	// FIXME: When it is a double reading. The cost should be more expensive. The right cost should add the

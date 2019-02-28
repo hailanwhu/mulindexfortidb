@@ -563,20 +563,21 @@ func (ds *DataSource) checkConditionSatisfyMulIndex(expressionFilter expression.
 			//ds.isTerminalArgAndIndxCol(args[])
 			for j := 0; j < len(args); j++ {
 				ok,index := ds.isTerminalArgAndIndxCol(args[j])
+				//index = index - 1
 				if ok && (index > -1) {
-					if updatedPath[index] == 0 {
-						updatedPath[index] = len(tempPaths)
+					if updatedPath[index-1] == 0 { //just because of index of index start from 1
+						updatedPath[index-1] = len(tempPaths)
 						path := ds.possibleAccessPaths[index]
 						path.tableFilters = make([]expression.Expression,0,1)
 						path.accessConds = []expression.Expression{conditions[i]}
-						tempPaths[index] = path
+						tempPaths[index-1] = path
 						} else {
 							path := tempPaths[index]
 							// not append,need to construct new funtion 'or' two function
 							tempFunction := path.accessConds[0]
 							newFunction := expression.NewFunctionInternal(ds.ctx, "or", types.NewFieldType(mysql.TypeTiny), tempFunction,conditions[i])
 							path.accessConds = []expression.Expression{newFunction}//append(path.accessConds, conditions[i])
-							tempPaths[index] = path
+							tempPaths[index-1] = path
 						}
 				}
 			}
@@ -912,9 +913,7 @@ func (ds *DataSource) convertToTableScan(prop *property.PhysicalProperty, candid
 // convertToMulIndexScan converts the DataSource to MulIndexScan.
 func (ds *DataSource) convertToMulIndexScan(prop *property.PhysicalProperty, paths []*accessPath, mulType int) (task task, err error) {
 	indexPlans := make([]PhysicalPlan,0)
-	// build new index range
 	for _,path := range paths {
-		log.Print("dead??")
 		if path == nil {
 			continue
 		}
@@ -942,16 +941,19 @@ func (ds *DataSource) convertToMulIndexScan(prop *property.PhysicalProperty, pat
 		// isDoubleRead is false just because of "must be"
 		// isDoubleRead should be true, because need handle
 		is.initSchema(ds.id, idx, true)
-		// get new range
-		idxCols, colLengths := expression.IndexInfo2Cols(is.schema.Columns, is.Index)
-		//if len(idxCols) == 0 {
-		//	return ranger.FullRange(), nil
-		//}
-		res, err := ranger.DetachCondAndBuildRangeForIndex(ds.ctx, is.AccessCondition, idxCols, colLengths)
-		is.Ranges = res.Ranges
-		if err != nil {
-			return nil, err
+		if mulType == 3 {
+			idxCols, colLengths := expression.IndexInfo2Cols(is.schema.Columns, is.Index)
+			if len(idxCols) == 0 {
+				is.Ranges = ranger.FullRange()
+			} else {
+				res, err := ranger.DetachCondAndBuildRangeForIndex(ds.ctx, is.AccessCondition, idxCols, colLengths)
+				if err != nil {
+					return nil, err
+				}
+				is.Ranges = res.Ranges
+			}
 		}
+
 		//return res.Ranges, nil
 		indexPlans = append(indexPlans, is)
 	}

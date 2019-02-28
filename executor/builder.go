@@ -1813,6 +1813,7 @@ func buildNoRangeMulIndexAndLookUpReader(b *executorBuilder, v *plannercore.Phys
 		dataReaderBuilder: &dataReaderBuilder{executorBuilder:b},
 		idxPlans: v.IndexPlans,
 		tblPlans: v.TablePlans,
+		mulType: v.MulType,
 	}
 	log.Print("#In Build MulIndexAndLookUpReader#builder.go:1766")
 

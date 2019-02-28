@@ -290,6 +290,7 @@ type MulIndexAndLookUpExecutor struct {
 	tblWorkerWg sync.WaitGroup
 	andWokerWg sync.WaitGroup
 
+	mulType int
 }
 
 func (e *MulIndexAndLookUpExecutor) Close() error {
@@ -400,13 +401,19 @@ func (e *MulIndexAndLookUpExecutor) startAndWorker(ctx context.Context,workCh ch
 		fetchCh: fetchCh,
 		workCh: workCh,
 		resultCh: e.resultCh,
-		handles: make([][]int64,2,5),
+		handles: make([][]int64,len(e.idxPlans)),
+		mulType:e.mulType,
 	}
 
 	e.andWokerWg.Add(1)
 	go func() {
 		worker.fetchLoop(total)
-		worker.getFinalHanles(ctx)
+		if worker.mulType == 1 {
+			worker.getFinalHanlesForAnd(ctx)
+		}else if worker.mulType == 3 {
+			worker.getFinalHanlesForOr(ctx)
+		}
+
 		close(workCh) //why ??
 		close(e.resultCh)
 		e.andWokerWg.Done()
@@ -537,7 +544,7 @@ type andWorkerForMulIndex struct {
 	workCh chan<- *lookupTableTask
 	resultCh chan<- *lookupTableTask
 	handles[][] int64
-
+	mulType int
 
 
 }
@@ -547,8 +554,49 @@ type andWorkerForMulIndex struct {
 //func (a int64arr) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
 //func (a int64arr) Less(i, j int) bool { return a[i] < a[j] }
 
-func (w *andWorkerForMulIndex) getFinalHanles(ctx context.Context,) {
-	log.Print("#In getFinalHandles #distsql.go:464")
+func (w *andWorkerForMulIndex) getFinalHanlesForOr(ctx context.Context) {
+	log.Printf("mulType is :%d",w.mulType)
+	log.Print("#In getFinalHanlesForOr #distsql.go")
+	finalHandles := make([]int64,0,100)
+	added := make(map[int64]int64)
+	for i := 0; i < len(w.handles); i++ {
+		//finalHandles = append(finalHandles, w.handles[i]...)
+		for j := 0; j < len(w.handles[i]); j++ {
+			_, ok := added[w.handles[i][j]]
+			if ok {
+				continue
+			}else {
+				added[w.handles[i][j]] = w.handles[i][j]
+				finalHandles = append(finalHandles, w.handles[i][j])
+			}
+		}
+	}
+	handlesCount := len(finalHandles)
+	log.Print(handlesCount)
+	for i := 0; i < handlesCount; i++ {
+		log.Printf("send %d",i)
+		handles := make([]int64,0,1)
+		handles = append(handles, finalHandles[i])
+		task := w.buildTableTask(handles)
+		select {
+		case <-ctx.Done():
+			return
+		case <-w.finished:
+			return //count, nil
+		case w.workCh <- task:
+			w.resultCh <- task
+		default:
+			log.Print("finishGetFinalHandle")
+			return
+		}
+
+	}
+
+}
+
+func (w *andWorkerForMulIndex) getFinalHanlesForAnd(ctx context.Context) {
+	log.Printf("mulType is :%d",w.mulType)
+	log.Print("#In getFinalHanlesForAnd #distsql.go")
 	for i := 0; i < len(w.handles); i++ {
         //sort.Sort(w.handles[i][:])
 		sort.Slice(w.handles[i][:], func(m, n int) bool { return w.handles[i][m] < w.handles[i][n]})
