@@ -300,8 +300,6 @@ func (e *MulIndexAndLookUpExecutor) Close() error {
 
 // Next implements Exec Next interface.
 func (e *MulIndexAndLookUpExecutor) Next(ctx context.Context, req *chunk.RecordBatch) error {
-
-	log.Print("In Mul Next0")
 	req.Reset()
 	for {
 		resultTask, err := e.getResultTask()
@@ -311,9 +309,7 @@ func (e *MulIndexAndLookUpExecutor) Next(ctx context.Context, req *chunk.RecordB
 		if resultTask == nil {
 			return nil
 		}
-		log.Print("In Mul Next")
 		for resultTask.cursor < len(resultTask.rows) {
-			log.Print(resultTask.rows[resultTask.cursor].GetInt64(1))
 			req.AppendRow(resultTask.rows[resultTask.cursor])
 			resultTask.cursor++
 			if req.NumRows() >= e.maxChunkSize {
@@ -321,8 +317,6 @@ func (e *MulIndexAndLookUpExecutor) Next(ctx context.Context, req *chunk.RecordB
 			}
 		}
 	}
-	log.Print("exit from Next")
-	return nil
 }
 
 func (e *MulIndexAndLookUpExecutor) getResultTask() (*lookupTableTask, error) {
@@ -356,7 +350,6 @@ func (e *MulIndexAndLookUpExecutor) Open(ctx context.Context) error {
 		}
 		kvRangess = append(kvRangess, oneKVRanges)
 	}
-	log.Print("#In Build Open#distsql.go:276")
 	err := e.open(ctx, kvRangess)
 	if err != nil {
 		e.feedback.Invalidate()
@@ -366,7 +359,6 @@ func (e *MulIndexAndLookUpExecutor) Open(ctx context.Context) error {
 }
 
 func (e *MulIndexAndLookUpExecutor) open(ctx context.Context, kvRangess [][]kv.KeyRange) error {
-	log.Print("#In Build open#distsql.go:289")
 	// TODO memory tracker
 
 	e.finished = make(chan struct{})
@@ -552,8 +544,6 @@ type andWorkerForMulIndex struct {
 //func (a int64arr) Less(i, j int) bool { return a[i] < a[j] }
 
 func (w *andWorkerForMulIndex) getFinalHanlesForOr(ctx context.Context) {
-	log.Printf("mulType is :%d", w.mulType)
-	log.Print("#In getFinalHanlesForOr #distsql.go")
 	finalHandles := make([]int64, 0, 100)
 	added := make(map[int64]int64)
 	for i := 0; i < len(w.handles); i++ {
@@ -569,9 +559,7 @@ func (w *andWorkerForMulIndex) getFinalHanlesForOr(ctx context.Context) {
 		}
 	}
 	handlesCount := len(finalHandles)
-	log.Print(handlesCount)
 	for i := 0; i < handlesCount; i++ {
-		log.Printf("send %d", i)
 		handles := make([]int64, 0, 1)
 		handles = append(handles, finalHandles[i])
 		task := w.buildTableTask(handles)
@@ -583,7 +571,6 @@ func (w *andWorkerForMulIndex) getFinalHanlesForOr(ctx context.Context) {
 		case w.workCh <- task:
 			w.resultCh <- task
 		default:
-			log.Print("finishGetFinalHandle")
 			return
 		}
 
@@ -592,14 +579,9 @@ func (w *andWorkerForMulIndex) getFinalHanlesForOr(ctx context.Context) {
 }
 
 func (w *andWorkerForMulIndex) getFinalHanlesForAnd(ctx context.Context) {
-	log.Printf("mulType is :%d", w.mulType)
-	log.Print("#In getFinalHanlesForAnd #distsql.go")
 	for i := 0; i < len(w.handles); i++ {
-		//sort.Sort(w.handles[i][:])
 		sort.Slice(w.handles[i][:], func(m, n int) bool { return w.handles[i][m] < w.handles[i][n] })
-		log.Print(w.handles[i][:])
 	}
-	log.Print(len(w.handles))
 	lengths := make([]int, 0, len(w.handles))
 	curs := make([]int, 0, len(w.handles))
 
@@ -618,18 +600,9 @@ func (w *andWorkerForMulIndex) getFinalHanlesForAnd(ctx context.Context) {
 	if minLen == 0 {
 		// no result can be found
 		// tell finish
-		log.Print("andWorkerForMulIndex no results")
 		return
 	}
 	finalHandles := make([]int64, 0, minLen)
-
-	//var minValue int64 = math.MaxInt64
-	//for i := 0; i < len(w.handles); i++ {
-	//	if w.handles[i][0] < minValue {
-	//		minValue = w.handles[i][0]
-	//		minIndex = i
-	//	}
-	//}
 
 	for {
 		if curs[minIndex] == lengths[minIndex] {
@@ -669,13 +642,10 @@ func (w *andWorkerForMulIndex) getFinalHanlesForAnd(ctx context.Context) {
 		}
 		curs[minIndex]++
 	}
-	log.Print(finalHandles)
-
 	//according to handlesCount to splict array and get task send to tableWorker
 	handlesCount := len(finalHandles)
-	log.Print(handlesCount)
+
 	for i := 0; i < handlesCount; i++ {
-		log.Printf("send %d", i)
 		handles := make([]int64, 0, 1)
 		handles = append(handles, finalHandles[i])
 		task := w.buildTableTask(handles)
@@ -687,7 +657,6 @@ func (w *andWorkerForMulIndex) getFinalHanlesForAnd(ctx context.Context) {
 		case w.workCh <- task:
 			w.resultCh <- task
 		default:
-			log.Print("finishGetFinalHandle")
 			return
 		}
 
@@ -713,29 +682,21 @@ func (w *andWorkerForMulIndex) buildTableTask(handles []int64) *lookupTableTask 
 }
 
 func (w *andWorkerForMulIndex) fetchLoop(total int) {
-	log.Print("#In fetchLoop #distsql.go:474")
 	var task *lookupTableTask
 	var ok bool
 	for {
 		if total == 0 {
-			log.Print("in for0")
-			log.Print(w.handles)
 			return
 		}
-		log.Print("in for")
 		select {
 		case task, ok = <-w.fetchCh:
 			if !ok {
-				log.Print("in for1")
 				return
 			}
 			handles, which := w.fetchHandles(task)
-			log.Print(handles)
-			log.Print(which)
 			// means someone has finished
 			if len(handles) == 0 {
 				total--
-				log.Print(total)
 				//continue
 			}
 			if w.handles[which] == nil {
@@ -743,7 +704,6 @@ func (w *andWorkerForMulIndex) fetchLoop(total int) {
 			}
 			w.handles[which] = append(w.handles[which], handles...)
 		case <-w.finished:
-			log.Print("in for2")
 			return
 		}
 	}
@@ -796,11 +756,9 @@ func (w *indexWorkerForMulIndex) fetchHandles(ctx context.Context, result distsq
 			w.resultCh <- &lookupTableTask{
 				doneCh: doneCh,
 			}
-			log.Print("over indexWorkerForMulIndex")
 			return count, err
 		}
 		if len(handles) == 0 {
-			log.Print("0 indexWorkerForMulIndex")
 			task := w.buildTableTask(handles, which)
 			w.fetchCh <- task
 			return count, nil
@@ -864,7 +822,6 @@ func (w *tableWorkerForMulIndex) pickAndExecTask(ctx context.Context) {
 }
 
 func (w *tableWorkerForMulIndex) executeTask(ctx context.Context, task *lookupTableTask) error {
-	log.Print(task.handles)
 	tableReader, err := w.buildTblReader(ctx, task.handles)
 	if err != nil {
 		log.Error(err)

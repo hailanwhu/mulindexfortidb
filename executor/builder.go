@@ -16,7 +16,6 @@ package executor
 import (
 	"bytes"
 	"context"
-	"log"
 	"math"
 	"sort"
 	"strings"
@@ -1815,8 +1814,6 @@ func buildNoRangeMulIndexAndLookUpReader(b *executorBuilder, v *plannercore.Phys
 		tblPlans:          v.TablePlans,
 		mulType:           v.MulType,
 	}
-	log.Print("#In Build MulIndexAndLookUpReader#builder.go:1766")
-
 	collectTable := false
 	e.tableRequest.CollectRangeCounts = &collectTable
 	// TODO now not ensure behavior, we set all indexcollect is false.
@@ -1834,7 +1831,6 @@ func buildNoRangeMulIndexAndLookUpReader(b *executorBuilder, v *plannercore.Phys
 }
 
 func (b *executorBuilder) buildMulIndexAndLookUpReader(v *plannercore.PhysicalMulIndexLookUpReader) *MulIndexAndLookUpExecutor {
-	log.Print("#In Build buildNoRangeMulIndexAndLookUpReader#builder.go:1833")
 	ret, err := buildNoRangeMulIndexAndLookUpReader(b, v)
 	if err != nil {
 		b.err = errors.Trace(err)
@@ -1844,7 +1840,7 @@ func (b *executorBuilder) buildMulIndexAndLookUpReader(v *plannercore.PhysicalMu
 	// set the range for every index
 	ret.rangess = make([][]*ranger.Range, 0, 2)
 
-	metrics.ExecutorCounter.WithLabelValues("MulIndexAndLookUpExecutor").Inc()
+	metrics.ExecutorCounter.WithLabelValues("MulIndexLookUpExecutor").Inc()
 	sctx := b.ctx.GetSessionVars().StmtCtx
 	for i := 0; i < len(v.IndexPlans); i++ {
 		is := v.IndexPlans[i].(*plannercore.PhysicalIndexScan)

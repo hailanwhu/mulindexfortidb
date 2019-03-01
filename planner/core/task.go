@@ -15,6 +15,7 @@ package core
 
 import (
 	"fmt"
+	"github.com/pingcap/tidb/planner/property"
 	"math"
 
 	"github.com/pingcap/parser/charset"
@@ -58,7 +59,8 @@ type copTask struct {
 	// 1 for PhysicalMulIndexAndLookUpReader
 	// 2 for PhysicalMulIndexAndReader
 	// 3 for PhysicalMulIndexUnionLookUpReader
-	mulType int
+	mulType    int
+	totalCount float64
 }
 
 func (t *copTask) invalid() bool {
@@ -213,20 +215,31 @@ func finishCopTask(ctx sessionctx.Context, task task) task {
 	// TODO now just test it
 	if t.mulType == 1 {
 		p := PhysicalMulIndexLookUpReader{IndexPlans: t.indexPlans, TablePlans: []PhysicalPlan{t.tablePlan}, MulType: t.mulType}.Init(ctx)
-		p.stats = t.indexPlans[0].statsInfo()
+		// maybe this is not will for final result
+		// and maybe  smallest
+		// or maybe   all
+		p.stats = property.NewSimpleStats(t.totalCount)
+		p.stats.UsePseudoStats = t.indexPlans[0].statsInfo().UsePseudoStats
+
+		t.cst += 1.5 * t.totalCount * netWorkFactor
+		t.cst += t.totalCount*cpuFactor + t.totalCount*memoryFactor
 		newTask := &rootTask{
-			cst: 0,
+			cst: t.cst,
 		}
 		newTask.p = p
 
 		return newTask
 	} else if t.mulType == 2 {
-
+		return invalidTask
 	} else if t.mulType == 3 {
 		p := PhysicalMulIndexLookUpReader{IndexPlans: t.indexPlans, TablePlans: []PhysicalPlan{t.tablePlan}, MulType: t.mulType}.Init(ctx)
-		p.stats = t.indexPlans[0].statsInfo()
+		p.stats = property.NewSimpleStats(t.totalCount)
+		p.stats.UsePseudoStats = t.indexPlans[0].statsInfo().UsePseudoStats
+		//p.stats = t.indexPlans[0].statsInfo()
+		t.cst += 2 * t.totalCount * netWorkFactor
+		t.cst += t.totalCount*cpuFactor + t.totalCount*memoryFactor
 		newTask := &rootTask{
-			cst: 0,
+			cst: t.cst,
 		}
 		newTask.p = p
 		return newTask

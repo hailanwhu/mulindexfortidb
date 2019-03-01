@@ -330,11 +330,6 @@ func (ds *DataSource) skylinePruning(prop *property.PhysicalProperty) []*candida
 // findBestTask implements the PhysicalPlan interface.
 // It will enumerate all the available indices and choose a plan with least cost.
 func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err error) {
-	//Start-Delete
-	if ds.tableInfo.Name.L == "t1" {
-		log.Print(ds.possibleAccessPaths)
-	}
-	//End-Delete
 
 	// If ds is an inner plan in an IndexJoin, the IndexJoin will generate an inner plan by itself,
 	// and set inner child prop nil, so here we do nothing.
@@ -403,6 +398,9 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 			if err != nil {
 				return nil, errors.Trace(err)
 			}
+			if ds.tableInfo.Name.L == "t4" {
+				log.Print("table ", tblTask.cost())
+			}
 			if tblTask.cost() < t.cost() {
 				t = tblTask
 			}
@@ -411,6 +409,9 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 		idxTask, err := ds.convertToIndexScan(prop, candidate)
 		if err != nil {
 			return nil, errors.Trace(err)
+		}
+		if ds.tableInfo.Name.L == "t4" {
+			log.Print("index ", idxTask.cost())
 		}
 		if idxTask.cost() < t.cost() {
 			t = idxTask
@@ -436,23 +437,16 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 		//mulType = 1
 	}
 	if mulType > 0 {
-		//paths = ds.possibleAccessPaths[1:]
-		log.Print(mulType)
-		if ds.tableInfo.Name.L == "t3" {
-			log.Print(mulType)
-		}
-		if ds.tableInfo.Name.L != "t3" {
-			//return
-		}
 		mulIndexTask, err := ds.convertToMulIndexScan(prop, paths, mulType)
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
-		t = mulIndexTask
-		//if ds.tableInfo.Name.L == "t3" {
-		//	t = mulIndexTask
-		//}
-
+		if ds.tableInfo.Name.L == "t4" {
+			log.Print("mul ", mulIndexTask.cost())
+		}
+		if mulIndexTask.cost() < t.cost() {
+			t = mulIndexTask
+		}
 	}
 
 	return
@@ -654,11 +648,6 @@ func (ds *DataSource) analyseOrWay(tableFilter expression.Expression) (int, []*a
 	indexIDs = append(indexIDs, indexIDs2...)
 	updatedPath := make([]int, len(ds.possibleAccessPaths)-1)
 	tempPaths := make([]*accessPath, len(ds.possibleAccessPaths)-1)
-	if ds.tableInfo.Name.L == "t3" {
-		log.Print(999)
-	}
-	log.Print(len(conditions))
-	log.Print(indexIDs)
 	for i := 0; i < len(conditions); i++ {
 		if updatedPath[indexIDs[i]-1] == 0 {
 			updatedPath[indexIDs[i]-1] = len(tempPaths)
@@ -680,9 +669,6 @@ func (ds *DataSource) analyseOrWay(tableFilter expression.Expression) (int, []*a
 
 func (ds *DataSource) getMulTypeAndPathsV2() (int, []*accessPath) {
 	//check can be or and
-	if ds.tableInfo.Name.L == "t3" {
-		log.Print("t3333")
-	}
 	mulType, which := ds.getPossibleMulType()
 	switch mulType {
 	case "and":
@@ -968,10 +954,13 @@ func (ds *DataSource) convertToTableScan(prop *property.PhysicalProperty, candid
 // convertToMulIndexScan converts the DataSource to MulIndexScan.
 func (ds *DataSource) convertToMulIndexScan(prop *property.PhysicalProperty, paths []*accessPath, mulType int) (task task, err error) {
 	indexPlans := make([]PhysicalPlan, 0)
+	sc := ds.ctx.GetSessionVars().StmtCtx
+	totalRowCount := 0.0
 	for _, path := range paths {
 		if path == nil {
 			continue
 		}
+
 		idx := path.index
 		is := PhysicalIndexScan{
 			Table:            ds.tableInfo,
@@ -992,10 +981,11 @@ func (ds *DataSource) convertToMulIndexScan(prop *property.PhysicalProperty, pat
 		if statsTbl.Indices[idx.ID] != nil {
 			is.Hist = &statsTbl.Indices[idx.ID].Histogram
 		}
-		is.stats = ds.stats
+
 		// isDoubleRead is false just because of "must be"
 		// isDoubleRead should be true, because need handle
 		is.initSchema(ds.id, idx, true)
+		// if mulType == 1 ,range is already right
 		if mulType == 3 {
 			idxCols, colLengths := expression.IndexInfo2Cols(is.schema.Columns, is.Index)
 			if len(idxCols) == 0 {
@@ -1003,13 +993,29 @@ func (ds *DataSource) convertToMulIndexScan(prop *property.PhysicalProperty, pat
 			} else {
 				res, err := ranger.DetachCondAndBuildRangeForIndex(ds.ctx, is.AccessCondition, idxCols, colLengths)
 				if err != nil {
-					return nil, err
+					return invalidTask, err
 				}
 				is.Ranges = res.Ranges
+				// shit !!!
+				path.ranges = res.Ranges
 			}
 		}
 
-		//return res.Ranges, nil
+		// get new rowCount
+		rowCount, err := ds.stats.HistColl.GetRowCountByIndexRanges(sc, path.index.ID, path.ranges)
+		if err != nil {
+			return nil, err
+		}
+
+		// TODO some different with befor skyline pruning
+		if (prop.IsEmpty()) && prop.ExpectedCnt < ds.stats.RowCount {
+			selectivity := ds.stats.RowCount / path.countAfterAccess
+			rowCount = math.Min(prop.ExpectedCnt/selectivity, rowCount)
+		}
+		is.stats = property.NewSimpleStats(rowCount)
+		is.stats.UsePseudoStats = ds.statisticTable.Pseudo
+
+		totalRowCount = totalRowCount + rowCount
 		indexPlans = append(indexPlans, is)
 	}
 	ts := PhysicalTableScan{
@@ -1020,7 +1026,15 @@ func (ds *DataSource) convertToMulIndexScan(prop *property.PhysicalProperty, pat
 	}.Init(ds.ctx)
 	ts.SetSchema(ds.schema.Clone())
 	ts.stats = ds.stats
-	copTask := &copTask{indexPlans: indexPlans, mulType: mulType, tablePlan: ts}
+	copTask := &copTask{indexPlans: indexPlans, mulType: mulType, tablePlan: ts, totalCount: totalRowCount}
+	// For IO , 1 for indexScan 1 for tableScan
+	// now no selection,so cpu cost = 0, not consider
+	if mulType == 1 {
+		copTask.cst = 0.5 * totalRowCount * scanFactor
+	} else if mulType == 3 {
+		copTask.cst = 2 * totalRowCount * scanFactor
+	}
+
 	task = copTask
 	//TODO this will be add cost
 

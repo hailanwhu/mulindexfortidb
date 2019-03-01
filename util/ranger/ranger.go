@@ -337,7 +337,6 @@ func buildCNFIndexRange(sc *stmtctx.StatementContext, cols []*expression.Column,
 			}
 		}
 	}
-
 	return ranges, nil
 }
 
