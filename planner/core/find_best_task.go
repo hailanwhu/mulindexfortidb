@@ -530,6 +530,7 @@ func (ds *DataSource) comeFromSameIndex(tableFilter expression.Expression) int {
 			}
 			if (wi > 0) && isFirst {
 				tempWhich = wi
+				isFirst = false
 			} else if (wi > 0) && (tempWhich != wi) {
 				return -1
 			}
