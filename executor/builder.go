@@ -1799,21 +1799,21 @@ func buildNoRangeMulIndexAndLookUpReader(b *executorBuilder, v *plannercore.Phys
 	ts := v.TablePlans[0].(*plannercore.PhysicalTableScan)
 
 	e := &MulIndexAndLookUpExecutor{
-		baseExecutor: newBaseExecutor(b.ctx, v.Schema(), v.ExplainID()),
-		dagPBs: indexReqs,
-		physicalTableID: is.Table.ID,
-		table:	table,
-		indices: indices,
-		keepOrders: keepOrders,
-		descs: descs,
-		tableRequest: tableReq,
-		columns: ts.Columns,
-		indexStreamings: indexStreamings,
-		tableStreaming: tableStreaming,
-		dataReaderBuilder: &dataReaderBuilder{executorBuilder:b},
-		idxPlans: v.IndexPlans,
-		tblPlans: v.TablePlans,
-		mulType: v.MulType,
+		baseExecutor:      newBaseExecutor(b.ctx, v.Schema(), v.ExplainID()),
+		dagPBs:            indexReqs,
+		physicalTableID:   is.Table.ID,
+		table:             table,
+		indices:           indices,
+		keepOrders:        keepOrders,
+		descs:             descs,
+		tableRequest:      tableReq,
+		columns:           ts.Columns,
+		indexStreamings:   indexStreamings,
+		tableStreaming:    tableStreaming,
+		dataReaderBuilder: &dataReaderBuilder{executorBuilder: b},
+		idxPlans:          v.IndexPlans,
+		tblPlans:          v.TablePlans,
+		mulType:           v.MulType,
 	}
 	log.Print("#In Build MulIndexAndLookUpReader#builder.go:1766")
 
@@ -1830,7 +1830,7 @@ func buildNoRangeMulIndexAndLookUpReader(b *executorBuilder, v *plannercore.Phys
 	// TODO see startIndexWorker
 	e.runtimeStats = nil
 
-	return e,nil
+	return e, nil
 }
 
 func (b *executorBuilder) buildMulIndexAndLookUpReader(v *plannercore.PhysicalMulIndexLookUpReader) *MulIndexAndLookUpExecutor {
@@ -1842,7 +1842,7 @@ func (b *executorBuilder) buildMulIndexAndLookUpReader(v *plannercore.PhysicalMu
 	}
 
 	// set the range for every index
-	ret.rangess = make([][]*ranger.Range,0,2)
+	ret.rangess = make([][]*ranger.Range, 0, 2)
 
 	metrics.ExecutorCounter.WithLabelValues("MulIndexAndLookUpExecutor").Inc()
 	sctx := b.ctx.GetSessionVars().StmtCtx
@@ -1850,7 +1850,7 @@ func (b *executorBuilder) buildMulIndexAndLookUpReader(v *plannercore.PhysicalMu
 		is := v.IndexPlans[i].(*plannercore.PhysicalIndexScan)
 		tempRanges := is.Ranges
 		ret.rangess = append(ret.rangess, tempRanges)
-		sctx.IndexIDs = append(sctx.IndexIDs,is.Index.ID)
+		sctx.IndexIDs = append(sctx.IndexIDs, is.Index.ID)
 	}
 	ts := v.TablePlans[0].(*plannercore.PhysicalTableScan)
 	sctx.TableIDs = append(sctx.TableIDs, ts.Table.ID)
