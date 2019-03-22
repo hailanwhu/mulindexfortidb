@@ -14,6 +14,8 @@
 package core
 
 import (
+	"github.com/pingcap/parser/ast"
+	"github.com/pingcap/tidb/util/ranger"
 	"math"
 
 	"github.com/pingcap/tidb/expression"
@@ -137,10 +139,203 @@ func (ds *DataSource) DeriveStats(childStats []*property.StatsInfo) (*property.S
 			break
 		}
 	}
+
+	shouldConsiderIndexMerge := true
+	for _, path := range ds.possibleAccessPaths {
+		if path.isTablePath {
+			continue
+		}
+		if len(path.accessConds) != 0 {
+			shouldConsiderIndexMerge = false
+			break
+		}
+	}
+
+	// If all index paths' accessCondtions is empty and have index
+	if  len(ds.possibleAccessPaths) > 1 && shouldConsiderIndexMerge {
+		ds.GetIndexMergeOrPaths()
+	}
+
 	if ds.ctx.GetSessionVars().OptimizerSelectivityLevel >= 1 {
 		ds.stats.HistColl = finalHist
 	}
 	return ds.stats, nil
+}
+
+func (ds *DataSource) GetIndexMergeOrPaths(){
+	log.Println(ds.tableInfo.Name.L)
+	if ds.tableInfo.Name.L == "testor" {
+		log.Println(0)
+	}
+	for i, cond := range ds.pushedDownConds {
+
+		var indexAccessPaths []*accessPath = nil
+		var imPaths = make([]*accessPath, 0 ,0)
+
+
+		if sf, ok := cond.(*expression.ScalarFunction); !ok || sf.FuncName.L != ast.LogicOr {
+			continue
+		}
+		sf, _ := cond.(*expression.ScalarFunction)
+		dnfItems := expression.FlattenDNFConditions(sf)
+		for _, item := range dnfItems {
+			if sfD, ok := item.(*expression.ScalarFunction); ok && sfD.FuncName.L == ast.LogicAnd {
+				cnfItem := expression.FlattenCNFConditions(sfD)
+				indexAccessPaths = ds.BuildAccessPathForOr(cnfItem)
+			} else {
+				tempArgs := []expression.Expression{item}
+				indexAccessPaths = ds.BuildAccessPathForOr(tempArgs)
+			}
+			if indexAccessPaths == nil {
+				imPaths = nil
+				break
+			}
+			imPartialPath := ds.GetIndexMergePartialPath(indexAccessPaths, item)
+			// just for test
+			if imPartialPath == nil {
+				imPaths = nil
+				break
+			}
+			imPaths = append(imPaths, imPartialPath)
+		}
+		if imPaths != nil {
+			possiblePath := ds.CreateIndexMergeOrPath(imPaths, i)
+			ds.indexMergeAccessPaths = append(ds.indexMergeAccessPaths, possiblePath)
+		}
+	}
+	if ds.tableInfo.Name.L == "testor" {
+		log.Println(0)
+	}
+}
+
+func (ds *DataSource) BuildAccessPathForOr(conditions []expression.Expression) []*accessPath{
+	indexCount := len(ds.tableInfo.Indices)
+	if indexCount == 0 {
+		return nil
+	}
+	var results = make([]*accessPath, 0, 0)
+	for i := 1; i <= indexCount; i++ {
+		res, err := ranger.DetachCondAndBuildRangeForIndexMerge(ds.ctx, conditions, ds.possibleAccessPaths[i].idxCols,ds.possibleAccessPaths[i].idxColLens)
+		if err != nil {
+			return nil
+		}
+		if len(res.AccessConds) == 0 {
+			continue
+		}
+		indexPath := ds.CreateIndexAccessPath(i, res)
+		if indexPath == nil {
+			return nil
+		}
+		results = append(results, indexPath)
+	}
+	if len(results) == 0 {
+		results = nil
+	}
+	return results
+}
+
+// this function will get a best indexPath for a con from some alternative paths.
+// now we just take the most compitable index
+// for exmple:
+// (1)
+// index1(a,b,c) index2(a,b) index3(a)
+// condition: a = 1 will choose index3; a = 1 and b = 2 will choose index2
+// (2)
+// index1(a) index2(b)
+// condition: a = 1 and b = 1
+// random choose???
+// maybe we can return all of them, and later to choose which one is better
+// (3)
+// index1(a) index2(a,b,c)
+// condition a = 1 and b = 2
+
+func (ds *DataSource) GetIndexMergePartialPath(indexAccessPaths []*accessPath, conditions expression.Expression) *accessPath{
+	noTableFilter := make([]int,0,0)
+	// first see which does not have tableFilter
+	for i, ap := range indexAccessPaths {
+		if len(ap.tableFilters) == 0 {
+			noTableFilter = append(noTableFilter, i)
+		}
+	}
+	// if multiple accessPath does not have tableFilter we need to choose the exact one
+	// if all have tableFilter, randomly pick one
+	// TODO maybe all be reserved
+	if len(noTableFilter) == 0 {
+		return indexAccessPaths[0]
+	} else if len(noTableFilter) == 1{
+		return indexAccessPaths[noTableFilter[0]]
+	} else {
+		//TODO which one should be choosen???
+		whichMax := 0
+		max := len(indexAccessPaths[noTableFilter[0]].idxCols)
+		for i := 0; i < len(noTableFilter); i++ {
+			current := len(indexAccessPaths[noTableFilter[0]].idxCols)
+			if  current > max {
+				whichMax = i
+				max = current
+			}
+		}
+		return indexAccessPaths[noTableFilter[whichMax]]
+	}
+}
+
+
+// (1)maybe we will merge some indexPaths
+//    for example: index1(a) index2(b)
+//    condition : a < 1 or a > 2 or b < 1 or b > 10
+//    imPaths will be [a<1,a>2,b<1,b>10] and we can merge it and get [a<1 or a >2 , b < 1 or b > 10]
+//    **must: same index and with tableFilter**
+//	  eg: index1(a) (a < 1 and b >2) or a > 2     != (a < 1 or a > 2) and b > 2
+// (2)IndexMergePath.tableFilters:
+//    <1> remove con from PushdownConditions and the remain will be added to tableFitler.
+//    <2> after merge operation, any indexPath's tableFilter is not nil, we should add con into
+//        tableFilters
+func (ds *DataSource) CreateIndexMergeOrPath(indexAccessPaths []*accessPath, which int) *accessPath{
+
+	indexMergePath := new(accessPath)
+	indexMergePath.isIndexMerge = true
+	indexMergePath.indexMergeType = 3
+	for i := 0; i < len(ds.pushedDownConds); i++ {
+		if i == which {
+			continue
+		}
+		indexMergePath.tableFiltersForIndexMerge = append(indexMergePath.tableFiltersForIndexMerge,ds.pushedDownConds[i])
+	}
+
+	for _, ap := range indexAccessPaths {
+		if len(ap.tableFilters) > 0 {
+			indexMergePath.tableFiltersForIndexMerge = append(indexMergePath.tableFiltersForIndexMerge,ds.pushedDownConds[which])
+			break
+		}
+	}
+	indexMergePath.partialPathsForIndexMerge = append(indexMergePath.partialPathsForIndexMerge,indexAccessPaths...)
+	//indexMergePath.tableFiltersForIndexMerg
+	return indexMergePath
+}
+
+func (ds *DataSource) CreateIndexAccessPath(which int, res *ranger.DetachRangeResult) *accessPath {
+	//copy a new index path and set the ranges
+	newAccessPath := new(accessPath)
+	oldAccessPath := ds.possibleAccessPaths[which]
+	newAccessPath.idxColLens = oldAccessPath.idxColLens
+	newAccessPath.idxCols = oldAccessPath.idxCols
+	newAccessPath.index = oldAccessPath.index
+	newAccessPath.isTablePath = oldAccessPath.isTablePath
+
+	newAccessPath.accessConds = res.AccessConds
+	newAccessPath.ranges = res.Ranges
+	newAccessPath.tableFilters = res.RemainedConds
+	newAccessPath.eqCondCount = res.EqCondCount
+	var err error
+	newAccessPath.countAfterAccess, err = ds.stats.HistColl.GetRowCountByIndexRanges(ds.ctx.GetSessionVars().StmtCtx, newAccessPath.index.ID, newAccessPath.ranges)
+	if err != nil {
+		return nil
+	}
+	if newAccessPath.countAfterAccess < ds.stats.RowCount {
+		newAccessPath.countAfterAccess = math.Min(ds.stats.RowCount/selectionFactor, float64(ds.statisticTable.Count))
+	}
+
+	return newAccessPath
 }
 
 // DeriveStats implement LogicalPlan DeriveStats interface.

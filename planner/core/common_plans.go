@@ -523,7 +523,7 @@ func (e *Explain) explainPlanInRowFormat(p PhysicalPlan, taskType, indent string
 			e.explainPlanInRowFormat(copPlan.IndexPlans[i], "cop", childIndent, false)
 		}
 		e.explainPlanInRowFormat(copPlan.IndexPlans[len(copPlan.IndexPlans)-1], "cop", childIndent, false)
-		e.explainPlanInRowFormat(copPlan.TablePlans[0], "cop", childIndent, true)
+		e.explainPlanInRowFormat(copPlan.tablePlan, "cop", childIndent, true)
 	}
 }
 

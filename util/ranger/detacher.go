@@ -393,3 +393,14 @@ func DetachCondsForTableRange(sctx sessionctx.Context, conds []expression.Expres
 	}
 	return detachColumnCNFConditions(sctx, conds, checker)
 }
+
+func DetachCondAndBuildRangeForIndexMerge(sctx sessionctx.Context, conditions []expression.Expression, cols []*expression.Column,
+	lengths []int) (*DetachRangeResult, error){
+
+	newTpSlice := make([]*types.FieldType, 0, len(cols))
+	for _, col := range cols {
+		newTpSlice = append(newTpSlice, newFieldType(col.RetType))
+	}
+	return detachCNFCondAndBuildRangeForIndex(sctx, conditions, cols, newTpSlice, lengths, true)
+
+}

@@ -408,7 +408,8 @@ func (p PhysicalIndexJoin) Init(ctx sessionctx.Context, stats *property.StatsInf
 // TODO maybe later will change this function
 func (p PhysicalMulIndexLookUpReader) Init(ctx sessionctx.Context) *PhysicalMulIndexLookUpReader {
 	p.basePhysicalPlan = newBasePhysicalPlan(ctx, TypeMulIndexAndLookUpReader, &p)
-	p.schema = p.TablePlans[0].Schema()
+	p.TablePlans = flattenPushDownPlan(p.tablePlan)
+	p.schema = p.tablePlan.Schema()
 	return &p
 }
 

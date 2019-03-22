@@ -214,7 +214,7 @@ func finishCopTask(ctx sessionctx.Context, task task) task {
 	}
 	// TODO now just test it
 	if t.mulType == 1 {
-		p := PhysicalMulIndexLookUpReader{IndexPlans: t.indexPlans, TablePlans: []PhysicalPlan{t.tablePlan}, MulType: t.mulType}.Init(ctx)
+		p := PhysicalMulIndexLookUpReader{IndexPlans: t.indexPlans, tablePlan:t.tablePlan, MulType: t.mulType}.Init(ctx)
 		// maybe this is not will for final result
 		// and maybe  smallest
 		// or maybe   all
@@ -232,14 +232,25 @@ func finishCopTask(ctx sessionctx.Context, task task) task {
 	} else if t.mulType == 2 {
 		return invalidTask
 	} else if t.mulType == 3 {
-		p := PhysicalMulIndexLookUpReader{IndexPlans: t.indexPlans, TablePlans: []PhysicalPlan{t.tablePlan}, MulType: t.mulType}.Init(ctx)
+		p := PhysicalMulIndexLookUpReader{IndexPlans: t.indexPlans, tablePlan:t.tablePlan, MulType: t.mulType}.Init(ctx)
 		p.stats = property.NewSimpleStats(t.totalCount)
 		p.stats.UsePseudoStats = t.indexPlans[0].statsInfo().UsePseudoStats
-		//p.stats = t.indexPlans[0].statsInfo()
-		t.cst += 2 * t.totalCount * netWorkFactor
-		t.cst += t.totalCount*cpuFactor + t.totalCount*memoryFactor
+
+		if !t.indexPlanFinished {
+			t.cst += t.totalCount * netWorkFactor // send index tuple
+
+			t.cst += t.totalCount * cpuFactor  // deal index tuple
+			t.cst += t.totalCount * scanFactor   // scan data tuple
+		}
+		// old version
+		//t.cst += 2 * t.totalCount * netWorkFactor
+		//t.cst += t.totalCount*cpuFactor + t.totalCount*memoryFactor
+		if t.tablePlan != nil {
+			t.cst += t.totalCount * netWorkFactor
+		}
 		newTask := &rootTask{
-			cst: t.cst,
+			cst:t.cst,
+			//cst: t.cst,
 		}
 		newTask.p = p
 		return newTask

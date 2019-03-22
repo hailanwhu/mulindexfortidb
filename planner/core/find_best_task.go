@@ -294,7 +294,7 @@ func (ds *DataSource) skylinePruning(prop *property.PhysicalProperty) []*candida
 	candidates := make([]*candidatePath, 0, 4)
 	for _, path := range ds.possibleAccessPaths {
 		// if we already know the range of the scan is empty, just return a TableDual
-		if len(path.ranges) == 0 && !ds.ctx.GetSessionVars().StmtCtx.UseCache {
+		if len(path.ranges) == 0 && !ds.ctx.GetSessionVars().StmtCtx.UseCache && !path.isIndexMerge{
 			return []*candidatePath{{path: path}}
 		}
 		var currentCandidate *candidatePath
@@ -333,6 +333,9 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 
 	// If ds is an inner plan in an IndexJoin, the IndexJoin will generate an inner plan by itself,
 	// and set inner child prop nil, so here we do nothing.
+	if ds.tableInfo.Name.L == "testor" {
+		log.Print("testor")
+	}
 	if prop == nil {
 		return nil, nil
 	}
@@ -427,7 +430,8 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 	// second, convert MulIndexPlan
 	mulType := 0
 	var paths []*accessPath
-	if len(ds.possibleAccessPaths) > 2 {
+	// >2
+	if len(ds.possibleAccessPaths)  == -1 {
 		// TODO later this will be a function to confirm and get the mulType
 		// func (ds *Datasource) getMulTypeAndPaths() (int,[]path){}
 		// see copTask comments (0/1/2/3)
@@ -436,6 +440,7 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 		mulType, paths = ds.getMulTypeAndPathsV2()
 		//mulType = 1
 	}
+
 	if mulType > 0 {
 		mulIndexTask, err := ds.convertToMulIndexScan(prop, paths, mulType)
 		if err != nil {
@@ -449,7 +454,89 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 		}
 	}
 
+	// above not execute
+	for i, path := range ds.indexMergeAccessPaths {
+		imTask, err := ds.convertToIndexMergeScan(prop, path, path.indexMergeType)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		if ds.tableInfo.Name.L == "testor" {
+			log.Printf("%d:  %f",i,imTask.cost())
+		}
+		if imTask.cost() < t.cost() {
+			t = imTask
+		}
+	}
+
+
 	return
+}
+
+
+func (ds *DataSource) convertToIndexMergeScan(prop *property.PhysicalProperty, path *accessPath, mulType int) (task task, err error){
+	indexPlans := make([]PhysicalPlan, 0)
+	totalRowCount := 0.0
+	for _, ixPath := range path.partialPathsForIndexMerge {
+		idx := ixPath.index
+		is := PhysicalIndexScan{
+			Table:            ds.tableInfo,
+			TableAsName:      ds.TableAsName,
+			DBName:           ds.DBName,
+			Columns:          ds.Columns,
+			Index:            idx,
+			IdxCols:          ixPath.idxCols,
+			IdxColLens:       ixPath.idxColLens,
+			AccessCondition:  ixPath.accessConds,
+			Ranges:           ixPath.ranges,
+			filterCondition:  nil,
+			dataSourceSchema: ds.schema,
+			isPartition:      ds.isPartition,
+			physicalTableID:  ds.physicalTableID,
+		}.Init(ds.ctx)
+		statsTbl := ds.statisticTable
+		if statsTbl.Indices[idx.ID] != nil {
+			is.Hist = &statsTbl.Indices[idx.ID].Histogram
+		}
+		is.initSchema(ds.id, idx, true)
+		is.stats = property.NewSimpleStats(path.countAfterAccess)
+		is.stats.UsePseudoStats = ds.statisticTable.Pseudo
+		totalRowCount = totalRowCount + ixPath.countAfterAccess
+		indexPlans = append(indexPlans, is)
+	}
+	ts := PhysicalTableScan{
+		Columns:         ds.Columns,
+		Table:           ds.tableInfo,
+		isPartition:     ds.isPartition,
+		physicalTableID: ds.physicalTableID,
+	}.Init(ds.ctx)
+	ts.SetSchema(ds.schema.Clone())
+	ts.stats = ds.stats
+
+	copTask := &copTask{indexPlans: indexPlans, mulType: mulType, tablePlan: ts, totalCount: totalRowCount}
+	copTask.cst = totalRowCount * scanFactor // scan index tuple
+	task = copTask
+
+	if len(path.tableFiltersForIndexMerge) > 0 {
+		log.Println(totalRowCount)
+		//copTask.finishIndexPlan()
+		copTask.cst = totalRowCount * netWorkFactor // send index tuple
+		copTask.cst += totalRowCount * cpuFactor  // deal index tuple
+		copTask.cst += totalRowCount * scanFactor   // scan data tuple
+		copTask.cst += totalRowCount * cpuFactor    // filter data tuple
+		tableSel := PhysicalSelection{Conditions: path.tableFiltersForIndexMerge}.Init(ds.ctx, ds.stats.ScaleByExpectCnt(prop.ExpectedCnt))
+		tableSel.SetChildren(copTask.tablePlan)
+		copTask.tablePlan = tableSel
+		copTask.indexPlanFinished = true
+	}
+
+	if prop.TaskTp == property.RootTaskType {
+		task = finishCopTask(ds.ctx, task)
+	} else if _, ok := task.(*rootTask); ok {
+		return invalidTask, nil
+	}
+
+	return task, nil
+
 }
 
 // isTerminalArg()
