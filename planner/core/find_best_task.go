@@ -418,39 +418,6 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 		}
 	}
 
-	// now we consider wheather can be MulIndex-Type Reader
-	// we just to consider all condition is connected with 'and' or 'or'.
-	// if it is 'and', every index accessPath's filter: accessCondtions is index attr condition tableFilters is other conditions
-	// if it is 'or' , every index accessPaht's filter: tableFilters is all conditions
-	// so, if is 'or' , we need to check all conditions is index attr conditions
-	// first, confirm conditions' form
-	// second, convert MulIndexPlan
-	mulType := 0
-	var paths []*accessPath
-	// >2
-	if len(ds.possibleAccessPaths)  == -1 {
-		// TODO later this will be a function to confirm and get the mulType
-		// func (ds *Datasource) getMulTypeAndPaths() (int,[]path){}
-		// see copTask comments (0/1/2/3)
-		// this function also transforms the old path to new path at the 'or' conditions
-		// remember keep the the same order with ds.possibleAccessPaths
-		mulType, paths = ds.getMulTypeAndPathsV2()
-		//mulType = 1
-	}
-
-	if mulType > 0 {
-		mulIndexTask, err := ds.convertToMulIndexScan(prop, paths, mulType)
-		if err != nil {
-			return nil, errors.Trace(err)
-		}
-		if ds.tableInfo.Name.L == "t4" {
-			log.Print("mul ", mulIndexTask.cost())
-		}
-		if mulIndexTask.cost() < t.cost() {
-			t = mulIndexTask
-		}
-	}
-
 	// above not execute
 	for i, path := range ds.indexMergeAccessPaths {
 		imTask, err := ds.convertToIndexMergeScan(prop, path, path.indexMergeType)
