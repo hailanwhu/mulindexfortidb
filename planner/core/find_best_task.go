@@ -333,9 +333,6 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 
 	// If ds is an inner plan in an IndexJoin, the IndexJoin will generate an inner plan by itself,
 	// and set inner child prop nil, so here we do nothing.
-	if ds.tableInfo.Name.L == "testor" {
-		log.Print("testor")
-	}
 	if prop == nil {
 		return nil, nil
 	}
@@ -401,7 +398,7 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 			if err != nil {
 				return nil, errors.Trace(err)
 			}
-			if ds.tableInfo.Name.L == "t4" {
+			if ds.tableInfo.Name.L == "testor" {
 				log.Print("table ", tblTask.cost())
 			}
 			if tblTask.cost() < t.cost() {
@@ -413,7 +410,7 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
-		if ds.tableInfo.Name.L == "t4" {
+		if ds.tableInfo.Name.L == "testor" {
 			log.Print("index ", idxTask.cost())
 		}
 		if idxTask.cost() < t.cost() {

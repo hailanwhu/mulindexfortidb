@@ -169,7 +169,7 @@ func (b *executorBuilder) build(p plannercore.Plan) Executor {
 		return b.buildIndexReader(v)
 	case *plannercore.PhysicalIndexLookUpReader:
 		return b.buildIndexLookUpReader(v)
-	case *plannercore.PhysicalMulIndexLookUpReader:
+	case *plannercore.PhysicalIndexMergeLookUpReader:
 		return b.buildMulIndexAndLookUpReader(v)
 	case *plannercore.PhysicalWindow:
 		return b.buildWindow(v)
@@ -1761,7 +1761,7 @@ func (b *executorBuilder) buildIndexLookUpReader(v *plannercore.PhysicalIndexLoo
 	return ret
 }
 
-func buildNoRangeMulIndexAndLookUpReader(b *executorBuilder, v *plannercore.PhysicalMulIndexLookUpReader) (*MulIndexAndLookUpExecutor, error) {
+func buildNoRangeMulIndexAndLookUpReader(b *executorBuilder, v *plannercore.PhysicalIndexMergeLookUpReader) (*IndexMergeLookUpExecutor, error) {
 	indexReqs := make([]*tipb.DAGRequest, 0, 2)
 	indexStreamings := make([]bool, 0, 2)
 	indices := make([]*model.IndexInfo, 0, 2)
@@ -1797,7 +1797,7 @@ func buildNoRangeMulIndexAndLookUpReader(b *executorBuilder, v *plannercore.Phys
 
 	ts := v.TablePlans[0].(*plannercore.PhysicalTableScan)
 
-	e := &MulIndexAndLookUpExecutor{
+	e := &IndexMergeLookUpExecutor{
 		baseExecutor:      newBaseExecutor(b.ctx, v.Schema(), v.ExplainID()),
 		dagPBs:            indexReqs,
 		physicalTableID:   is.Table.ID,
@@ -1830,7 +1830,7 @@ func buildNoRangeMulIndexAndLookUpReader(b *executorBuilder, v *plannercore.Phys
 	return e, nil
 }
 
-func (b *executorBuilder) buildMulIndexAndLookUpReader(v *plannercore.PhysicalMulIndexLookUpReader) *MulIndexAndLookUpExecutor {
+func (b *executorBuilder) buildMulIndexAndLookUpReader(v *plannercore.PhysicalIndexMergeLookUpReader) *IndexMergeLookUpExecutor {
 	ret, err := buildNoRangeMulIndexAndLookUpReader(b, v)
 	if err != nil {
 		b.err = errors.Trace(err)
@@ -1840,7 +1840,7 @@ func (b *executorBuilder) buildMulIndexAndLookUpReader(v *plannercore.PhysicalMu
 	// set the range for every index
 	ret.rangess = make([][]*ranger.Range, 0, 2)
 
-	metrics.ExecutorCounter.WithLabelValues("MulIndexLookUpExecutor").Inc()
+	metrics.ExecutorCounter.WithLabelValues("IndexMergeLookUpExecutor").Inc()
 	sctx := b.ctx.GetSessionVars().StmtCtx
 	for i := 0; i < len(v.IndexPlans); i++ {
 		is := v.IndexPlans[i].(*plannercore.PhysicalIndexScan)

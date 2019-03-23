@@ -214,7 +214,7 @@ func finishCopTask(ctx sessionctx.Context, task task) task {
 	}
 	// TODO now just test it
 	if t.mulType == 1 {
-		p := PhysicalMulIndexLookUpReader{IndexPlans: t.indexPlans, tablePlan:t.tablePlan, MulType: t.mulType}.Init(ctx)
+		p := PhysicalIndexMergeLookUpReader{IndexPlans: t.indexPlans, tablePlan:t.tablePlan, MulType: t.mulType}.Init(ctx)
 		// maybe this is not will for final result
 		// and maybe  smallest
 		// or maybe   all
@@ -232,7 +232,7 @@ func finishCopTask(ctx sessionctx.Context, task task) task {
 	} else if t.mulType == 2 {
 		return invalidTask
 	} else if t.mulType == 3 {
-		p := PhysicalMulIndexLookUpReader{IndexPlans: t.indexPlans, tablePlan:t.tablePlan, MulType: t.mulType}.Init(ctx)
+		p := PhysicalIndexMergeLookUpReader{IndexPlans: t.indexPlans, tablePlan:t.tablePlan, MulType: t.mulType}.Init(ctx)
 		p.stats = property.NewSimpleStats(t.totalCount)
 		p.stats.UsePseudoStats = t.indexPlans[0].statsInfo().UsePseudoStats
 

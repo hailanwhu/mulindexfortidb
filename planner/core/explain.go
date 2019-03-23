@@ -143,12 +143,12 @@ func (p *PhysicalIndexLookUpReader) ExplainInfo() string {
 	return ""
 }
 
-func (p *PhysicalMulIndexLookUpReader) ExplainInfo() string {
+func (p *PhysicalIndexMergeLookUpReader) ExplainInfo() string {
 	if p.MulType == 1 {
-		return "MulIndexAnd"
+		return "IndexMergeAnd"
 	}
 	if p.MulType == 3 {
-		return "MulIndexOr"
+		return "IndexMergeOr"
 	}
 	return ""
 }

@@ -163,10 +163,6 @@ func (ds *DataSource) DeriveStats(childStats []*property.StatsInfo) (*property.S
 }
 
 func (ds *DataSource) GetIndexMergeOrPaths(){
-	log.Println(ds.tableInfo.Name.L)
-	if ds.tableInfo.Name.L == "testor" {
-		log.Println(0)
-	}
 	for i, cond := range ds.pushedDownConds {
 
 		var indexAccessPaths []*accessPath = nil
@@ -202,9 +198,6 @@ func (ds *DataSource) GetIndexMergeOrPaths(){
 			possiblePath := ds.CreateIndexMergeOrPath(imPaths, i)
 			ds.indexMergeAccessPaths = append(ds.indexMergeAccessPaths, possiblePath)
 		}
-	}
-	if ds.tableInfo.Name.L == "testor" {
-		log.Println(0)
 	}
 }
 
