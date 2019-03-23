@@ -324,9 +324,9 @@ func (ds *DataSource) CreateIndexAccessPath(which int, res *ranger.DetachRangeRe
 	if err != nil {
 		return nil
 	}
-	if newAccessPath.countAfterAccess < ds.stats.RowCount {
-		newAccessPath.countAfterAccess = math.Min(ds.stats.RowCount/selectionFactor, float64(ds.statisticTable.Count))
-	}
+	//if newAccessPath.countAfterAccess < ds.stats.RowCount {
+	//	newAccessPath.countAfterAccess = math.Min(ds.stats.RowCount/selectionFactor, float64(ds.statisticTable.Count))
+	//}
 
 	return newAccessPath
 }

@@ -495,7 +495,7 @@ func (ds *DataSource) convertToIndexMergeScan(prop *property.PhysicalProperty, p
 			is.Hist = &statsTbl.Indices[idx.ID].Histogram
 		}
 		is.initSchema(ds.id, idx, true)
-		is.stats = property.NewSimpleStats(path.countAfterAccess)
+		is.stats = property.NewSimpleStats(ixPath.countAfterAccess)
 		is.stats.UsePseudoStats = ds.statisticTable.Pseudo
 		totalRowCount = totalRowCount + ixPath.countAfterAccess
 		indexPlans = append(indexPlans, is)
@@ -508,6 +508,7 @@ func (ds *DataSource) convertToIndexMergeScan(prop *property.PhysicalProperty, p
 	}.Init(ds.ctx)
 	ts.SetSchema(ds.schema.Clone())
 	ts.stats = ds.stats
+	log.Printf("totalcont: %f\n", totalRowCount)
 
 	copTask := &copTask{indexPlans: indexPlans, mulType: mulType, tablePlan: ts, totalCount: totalRowCount}
 	copTask.cst = totalRowCount * scanFactor // scan index tuple
