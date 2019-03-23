@@ -15,6 +15,7 @@ package executor
 
 import (
 	"context"
+	"github.com/pingcap/tidb/util/bitmap"
 	"math"
 	"runtime"
 	"sort"
@@ -394,15 +395,16 @@ func (e *MulIndexAndLookUpExecutor) startAndWorker(ctx context.Context, workCh c
 		resultCh: e.resultCh,
 		handles:  make([][]int64, len(e.idxPlans)),
 		mulType:  e.mulType,
+		bitmaps: make([]*bitmap.Bitmapset,len(e.idxPlans)),
 	}
 
 	e.andWokerWg.Add(1)
 	go func() {
-		worker.fetchLoop(total)
+		worker.fetchLoop(total, ctx)
 		if worker.mulType == 1 {
 			worker.getFinalHanlesForAnd(ctx)
 		} else if worker.mulType == 3 {
-			worker.getFinalHanlesForOr(ctx)
+			//worker.getFinalHanlesForOr(ctx)
 		}
 
 		close(workCh) //why ??
@@ -535,6 +537,7 @@ type andWorkerForMulIndex struct {
 	workCh   chan<- *lookupTableTask
 	resultCh chan<- *lookupTableTask
 	handles  [][]int64
+	bitmaps []*bitmap.Bitmapset
 	mulType  int
 }
 
@@ -681,7 +684,7 @@ func (w *andWorkerForMulIndex) buildTableTask(handles []int64) *lookupTableTask 
 	return task
 }
 
-func (w *andWorkerForMulIndex) fetchLoop(total int) {
+func (w *andWorkerForMulIndex) fetchLoop(total int,ctx context.Context) {
 	var task *lookupTableTask
 	var ok bool
 	for {
@@ -695,14 +698,38 @@ func (w *andWorkerForMulIndex) fetchLoop(total int) {
 			}
 			handles, which := w.fetchHandles(task)
 			// means someone has finished
-			if len(handles) == 0 {
+			hc := len(handles)
+			if hc == 0 {
 				total--
 				//continue
 			}
-			if w.handles[which] == nil {
-				w.handles[which] = make([]int64, 0, 64)
+			if w.mulType == 3 {
+				fhs := make([]int64,0,0)
+				for i := 0; i < hc; i++ {
+					log.Println(which)
+					if !bitmap.IsABitmapMember(int(handles[i]),w.bitmaps[0]) {
+						fhs = append(fhs,handles[i])
+						bitmap.AddMember(w.bitmaps[0],int(handles[i]))
+					}
+				}
+				task := w.buildTableTask(fhs)
+				select {
+				case <-ctx.Done():
+					return
+				case <-w.finished:
+					return //count, nil
+				case w.workCh <- task:
+					w.resultCh <- task
+				default:
+					return
+				}
+			} else if w.mulType == 1 {
+				log.Println(which)
 			}
-			w.handles[which] = append(w.handles[which], handles...)
+			//if w.handles[which] == nil {
+			//	w.handles[which] = make([]int64, 0, 64)
+			//}
+			//w.handles[which] = append(w.handles[which], handles...)
 		case <-w.finished:
 			return
 		}
