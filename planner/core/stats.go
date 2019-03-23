@@ -212,7 +212,7 @@ func (ds *DataSource) BuildAccessPathForOr(conditions []expression.Expression) [
 		if err != nil {
 			return nil
 		}
-		if len(res.AccessConds) == 0 {
+		if res.AccessConds == nil {
 			continue
 		}
 		indexPath := ds.CreateIndexAccessPath(i, res)
@@ -273,6 +273,9 @@ func (ds *DataSource) GetIndexMergePartialPath(indexAccessPaths []*accessPath, c
 }
 
 
+// why not and, network!!
+// why merge or, network??
+
 // (1)maybe we will merge some indexPaths
 //    for example: index1(a) index2(b)
 //    condition : a < 1 or a > 2 or b < 1 or b > 10
@@ -283,8 +286,75 @@ func (ds *DataSource) GetIndexMergePartialPath(indexAccessPaths []*accessPath, c
 //    <1> remove con from PushdownConditions and the remain will be added to tableFitler.
 //    <2> after merge operation, any indexPath's tableFilter is not nil, we should add con into
 //        tableFilters
+// bad case
+//  (a=1 and b < 2 and d =4) or a = 3 or c >4
+// index(a) index(a,b) index(c)
+// will two  a,b may be one need a, access less tuple??? the same number.
 func (ds *DataSource) CreateIndexMergeOrPath(indexAccessPaths []*accessPath, which int) *accessPath{
 
+
+	finalIndexAccessPaths := make([]*accessPath, 0, 0)
+	indexCount := len(ds.tableInfo.Indices)
+	accessPathCount := len(indexAccessPaths)
+	whichIndexes := make([][]int64,indexCount+1,indexCount+1)
+	for i := 0; i < indexCount + 1; i++  {
+		whichIndexes[i] = make([]int64,0,accessPathCount)
+	}
+	for i, path := range indexAccessPaths  {
+		whichIndexes[path.index.ID] = append(whichIndexes[path.index.ID], int64(i))
+	}
+
+	for ixd, ixr := range whichIndexes  {
+		c := len(ixr)
+		switch c {
+		case 0:
+			continue
+		case 1:
+			finalIndexAccessPaths = append(finalIndexAccessPaths,indexAccessPaths[ixr[0]])
+		default:
+			// TODO maybe somepart can merge
+			if ds.tableInfo.Name.L == "testmerge" {
+				log.Println(0)
+			}
+			canBe := true
+			newCondtion := expression.ComposeCNFCondition(ds.ctx,indexAccessPaths[ixr[0]].accessConds...)
+			if indexAccessPaths[ixr[0]].tableFilters != nil {
+				canBe = false
+			}
+			for i := 1; i < c && canBe; i++ {
+				if indexAccessPaths[ixr[i]].tableFilters != nil {
+					canBe = false
+				}
+				tempC := expression.ComposeCNFCondition(ds.ctx,indexAccessPaths[ixr[i]].accessConds...)
+				newCondtion = expression.ComposeDNFCondition(ds.ctx, newCondtion, tempC)
+			}
+			if canBe {
+				res, err := ranger.DetachCondAndBuildRangeForIndexMerge(ds.ctx, []expression.Expression{newCondtion}, ds.possibleAccessPaths[ixd].idxCols,ds.possibleAccessPaths[ixd].idxColLens)
+				if err != nil {
+					return nil
+				}
+				if res.AccessConds == nil {
+					continue
+				}
+				indexPath := ds.CreateIndexAccessPath(ixd, res)
+				if indexPath == nil {
+					return nil
+				}
+				if indexPath.accessConds == nil {
+					canBe = false
+				} else {
+					finalIndexAccessPaths = append(finalIndexAccessPaths,indexPath)
+				}
+
+			}
+			if !canBe {
+				log.Println("false")
+				for i := 0; i < c; i++ {
+					finalIndexAccessPaths = append(finalIndexAccessPaths,indexAccessPaths[ixr[i]])
+				}
+			}
+		}
+	}
 	indexMergePath := new(accessPath)
 	indexMergePath.isIndexMerge = true
 	indexMergePath.indexMergeType = 3
@@ -295,13 +365,13 @@ func (ds *DataSource) CreateIndexMergeOrPath(indexAccessPaths []*accessPath, whi
 		indexMergePath.tableFiltersForIndexMerge = append(indexMergePath.tableFiltersForIndexMerge,ds.pushedDownConds[i])
 	}
 
-	for _, ap := range indexAccessPaths {
-		if len(ap.tableFilters) > 0 {
+	for _, ap := range finalIndexAccessPaths {
+		if ap.tableFilters != nil {
 			indexMergePath.tableFiltersForIndexMerge = append(indexMergePath.tableFiltersForIndexMerge,ds.pushedDownConds[which])
 			break
 		}
 	}
-	indexMergePath.partialPathsForIndexMerge = append(indexMergePath.partialPathsForIndexMerge,indexAccessPaths...)
+	indexMergePath.partialPathsForIndexMerge = append(indexMergePath.partialPathsForIndexMerge,finalIndexAccessPaths...)
 	//indexMergePath.tableFiltersForIndexMerg
 	return indexMergePath
 }

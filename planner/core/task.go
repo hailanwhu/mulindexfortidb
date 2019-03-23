@@ -250,7 +250,7 @@ func finishCopTask(ctx sessionctx.Context, task task) task {
 		}
 		newTask := &rootTask{
 			cst:t.cst,
-			//cst: t.cst,
+			//cst: 0,
 		}
 		newTask.p = p
 		return newTask
