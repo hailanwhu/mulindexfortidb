@@ -329,7 +329,7 @@ func (ds *DataSource) CreateIndexMergeOrPath(indexAccessPaths []*accessPath, whi
 				newCondtion = expression.ComposeDNFCondition(ds.ctx, newCondtion, tempC)
 			}
 			if canBe {
-				res, err := ranger.DetachCondAndBuildRangeForIndexMerge(ds.ctx, []expression.Expression{newCondtion}, ds.possibleAccessPaths[ixd].idxCols,ds.possibleAccessPaths[ixd].idxColLens)
+				res, err := ranger.DetachCondAndBuildRangeForIndex(ds.ctx, []expression.Expression{newCondtion}, ds.possibleAccessPaths[ixd].idxCols,ds.possibleAccessPaths[ixd].idxColLens)
 				if err != nil {
 					return nil
 				}
@@ -337,6 +337,9 @@ func (ds *DataSource) CreateIndexMergeOrPath(indexAccessPaths []*accessPath, whi
 					continue
 				}
 				indexPath := ds.CreateIndexAccessPath(ixd, res)
+				if ds.tableInfo.Name.L == "testor2" {
+					log.Println(0)
+				}
 				if indexPath == nil {
 					return nil
 				}

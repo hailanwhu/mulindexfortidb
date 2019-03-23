@@ -249,8 +249,8 @@ func finishCopTask(ctx sessionctx.Context, task task) task {
 			t.cst += t.totalCount * netWorkFactor
 		}
 		newTask := &rootTask{
-			cst:t.cst,
-			//cst: 0,
+			//cst:t.cst,
+			cst: 0,
 		}
 		newTask.p = p
 		return newTask
