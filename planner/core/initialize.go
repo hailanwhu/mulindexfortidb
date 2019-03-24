@@ -83,6 +83,8 @@ const (
 	TypeIndexReader = "IndexReader"
 	// TypeWindow is the type of Window.
 	TypeWindow = "Window"
+	//
+	TypeSmoothScanReader = "SmoothScanReader"
 )
 
 // Init initializes LogicalAggregation.
@@ -365,6 +367,15 @@ func (p PhysicalUnionScan) Init(ctx sessionctx.Context, stats *property.StatsInf
 // Init initializes PhysicalIndexLookUpReader.
 func (p PhysicalIndexLookUpReader) Init(ctx sessionctx.Context) *PhysicalIndexLookUpReader {
 	p.basePhysicalPlan = newBasePhysicalPlan(ctx, TypeIndexLookUp, &p)
+	p.TablePlans = flattenPushDownPlan(p.tablePlan)
+	p.IndexPlans = flattenPushDownPlan(p.indexPlan)
+	p.schema = p.tablePlan.Schema()
+	return &p
+}
+
+// Init initializes PhysicalIndexLookUpReader.
+func (p PhysicalSmoothScan) Init(ctx sessionctx.Context) *PhysicalSmoothScan {
+	p.basePhysicalPlan = newBasePhysicalPlan(ctx, TypeSmoothScanReader, &p)
 	p.TablePlans = flattenPushDownPlan(p.tablePlan)
 	p.IndexPlans = flattenPushDownPlan(p.indexPlan)
 	p.schema = p.tablePlan.Schema()

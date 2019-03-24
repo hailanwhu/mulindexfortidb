@@ -14,6 +14,7 @@
 package core
 
 import (
+	"log"
 	"math"
 
 	"github.com/pingcap/errors"
@@ -409,6 +410,9 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 			t = idxTask
 		}
 	}
+	if ds.tableInfo.Name.L == "testor2" {
+		log.Print(0)
+	}
 	return
 }
 
@@ -465,6 +469,7 @@ func (ds *DataSource) convertToIndexScan(prop *property.PhysicalProperty, candid
 		dataSourceSchema: ds.schema,
 		isPartition:      ds.isPartition,
 		physicalTableID:  ds.physicalTableID,
+		EqCount:		  path.eqCondCount,
 	}.Init(ds.ctx)
 	statsTbl := ds.statisticTable
 	if statsTbl.Indices[idx.ID] != nil {
@@ -522,6 +527,9 @@ func (ds *DataSource) convertToIndexScan(prop *property.PhysicalProperty, candid
 			return invalidTask, nil
 		}
 		is.addPushedDownSelection(cop, ds, expectedCnt, path)
+	}
+	if ds.tableInfo.Name.L == "testor2" {
+		log.Print(0)
 	}
 	if prop.TaskTp == property.RootTaskType {
 		task = finishCopTask(ds.ctx, task)

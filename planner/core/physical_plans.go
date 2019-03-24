@@ -49,7 +49,26 @@ var (
 	_ PhysicalPlan = &PhysicalMergeJoin{}
 	_ PhysicalPlan = &PhysicalUnionScan{}
 	_ PhysicalPlan = &PhysicalWindow{}
+	_ PhysicalPlan = &PhysicalSmoothScan{}
 )
+
+type PhysicalSmoothScan struct {
+	physicalSchemaProducer
+
+	// IndexPlans flats the indexPlan to construct executor pb.
+	IndexPlans []PhysicalPlan
+	// TablePlans flats the tablePlan to construct executor pb.
+	TablePlans []PhysicalPlan
+	indexPlan  PhysicalPlan
+	tablePlan  PhysicalPlan
+
+	// rowLen
+	RowLen int
+	// index Type
+	IsUnique bool
+	// isOrdered
+	IsOrderd bool
+}
 
 // PhysicalTableReader is the table reader in tidb.
 type PhysicalTableReader struct {
@@ -120,6 +139,8 @@ type PhysicalIndexScan struct {
 	// The index scan may be on a partition.
 	isPartition     bool
 	physicalTableID int64
+
+	EqCount int
 }
 
 // PhysicalMemTable reads memory table.

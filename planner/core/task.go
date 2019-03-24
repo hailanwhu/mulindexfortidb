@@ -211,7 +211,15 @@ func finishCopTask(ctx sessionctx.Context, task task) task {
 		cst: t.cst,
 	}
 	if t.indexPlan != nil && t.tablePlan != nil {
-		p := PhysicalIndexLookUpReader{tablePlan: t.tablePlan, indexPlan: t.indexPlan}.Init(ctx)
+
+		indexPlanT, _ := (t.indexPlan).(* PhysicalIndexScan)
+		isUnique := indexPlanT.Index.Unique
+		isOrderd := indexPlanT.EqCount == len(indexPlanT.Table.Columns)
+		rowLen := 0
+		for _, col := range indexPlanT.Table.Columns {
+			rowLen += col.Flen
+		}
+		p := PhysicalSmoothScan{tablePlan: t.tablePlan, indexPlan: t.indexPlan, IsUnique: isUnique, IsOrderd: isOrderd}.Init(ctx)
 		p.stats = t.tablePlan.statsInfo()
 		if t.doubleReadNeedProj {
 			schema := p.IndexPlans[0].(*PhysicalIndexScan).dataSourceSchema
