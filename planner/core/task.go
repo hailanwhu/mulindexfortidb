@@ -210,8 +210,9 @@ func finishCopTask(ctx sessionctx.Context, task task) task {
 	newTask := &rootTask{
 		cst: t.cst,
 	}
+	// do not need to record global selectivity
+	// if can be index plan, we must choose it
 	if t.indexPlan != nil && t.tablePlan != nil {
-
 		indexPlanT, _ := (t.indexPlan).(* PhysicalIndexScan)
 		isUnique := indexPlanT.Index.Unique
 		isOrderd := indexPlanT.EqCount == len(indexPlanT.Columns)

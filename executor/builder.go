@@ -171,10 +171,94 @@ func (b *executorBuilder) build(p plannercore.Plan) Executor {
 		return b.buildIndexLookUpReader(v)
 	case *plannercore.PhysicalWindow:
 		return b.buildWindow(v)
+	case *plannercore.PhysicalSmoothScan:
+		return b.buildPhyscialSmoothScan(v)
 	default:
 		b.err = ErrUnknownPlan.GenWithStack("Unknown Plan %T", p)
 		return nil
 	}
+}
+
+func buildNoRangeSmoothScan(b *executorBuilder, v *plannercore.PhysicalSmoothScan) (*IndexLookUpExecutor, error) {
+	indexReq, indexStreaming, err := b.constructDAGReq(v.IndexPlans)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	tableReq, tableStreaming, err := b.constructDAGReq(v.TablePlans)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	is := v.IndexPlans[0].(*plannercore.PhysicalIndexScan)
+	indexReq.OutputOffsets = []uint32{uint32(len(is.Index.Columns))}
+	table, _ := b.is.TableByID(is.Table.ID)
+
+	for i := 0; i < v.Schema().Len(); i++ {
+		tableReq.OutputOffsets = append(tableReq.OutputOffsets, uint32(i))
+	}
+
+	ts := v.TablePlans[0].(*plannercore.PhysicalTableScan)
+
+	e := &IndexLookUpExecutor{
+		baseExecutor:      newBaseExecutor(b.ctx, v.Schema(), v.ExplainID()),
+		dagPB:             indexReq,
+		physicalTableID:   is.Table.ID,
+		table:             table,
+		index:             is.Index,
+		keepOrder:         is.KeepOrder,
+		desc:              is.Desc,
+		tableRequest:      tableReq,
+		columns:           ts.Columns,
+		indexStreaming:    indexStreaming,
+		tableStreaming:    tableStreaming,
+		dataReaderBuilder: &dataReaderBuilder{executorBuilder: b},
+		corColInIdxSide:   b.corColInDistPlan(v.IndexPlans),
+		corColInTblSide:   b.corColInDistPlan(v.TablePlans),
+		corColInAccess:    b.corColInAccess(v.IndexPlans[0]),
+		idxCols:           is.IdxCols,
+		colLens:           is.IdxColLens,
+		idxPlans:          v.IndexPlans,
+		tblPlans:          v.TablePlans,
+		isSmoothScan:      true,
+	}
+	if isPartition, physicalTableID := ts.IsPartition(); isPartition {
+		e.physicalTableID = physicalTableID
+	}
+
+	if containsLimit(indexReq.Executors) {
+		e.feedback = statistics.NewQueryFeedback(0, nil, 0, is.Desc)
+	} else {
+		e.feedback = statistics.NewQueryFeedback(e.physicalTableID, is.Hist, int64(is.StatsCount()), is.Desc)
+	}
+	// do not collect the feedback for table request.
+	collectTable := false
+	e.tableRequest.CollectRangeCounts = &collectTable
+	collectIndex := (b.ctx.GetSessionVars().StmtCtx.RuntimeStatsColl != nil) || e.feedback.CollectFeedback(len(is.Ranges))
+	if !collectIndex {
+		e.feedback.Invalidate()
+	}
+	e.dagPB.CollectRangeCounts = &collectIndex
+	if cols, ok := v.Schema().TblID2Handle[is.Table.ID]; ok {
+		e.handleIdx = cols[0].Index
+	}
+	return e, nil
+}
+
+func (b *executorBuilder) buildPhyscialSmoothScan(v *plannercore.PhysicalSmoothScan) *IndexLookUpExecutor {
+	ret, err := buildNoRangeSmoothScan(b, v)
+	if err != nil {
+		b.err = errors.Trace(err)
+		return nil
+	}
+
+	is := v.IndexPlans[0].(*plannercore.PhysicalIndexScan)
+	ts := v.TablePlans[0].(*plannercore.PhysicalTableScan)
+
+	ret.ranges = is.Ranges
+	metrics.ExecutorCounter.WithLabelValues("SmoothScan").Inc()
+	sctx := b.ctx.GetSessionVars().StmtCtx
+	sctx.IndexIDs = append(sctx.IndexIDs, is.Index.ID)
+	sctx.TableIDs = append(sctx.TableIDs, ts.Table.ID)
+	return ret
 }
 
 func (b *executorBuilder) buildCancelDDLJobs(v *plannercore.CancelDDLJobs) Executor {

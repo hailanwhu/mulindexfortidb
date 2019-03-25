@@ -358,6 +358,8 @@ type IndexLookUpExecutor struct {
 	corColInAccess  bool
 	idxCols         []*expression.Column
 	colLens         []int
+
+	isSmoothScan bool
 }
 
 // Open implements the Executor Open interface.
