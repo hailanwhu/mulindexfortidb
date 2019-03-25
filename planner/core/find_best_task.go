@@ -398,7 +398,7 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 			if err != nil {
 				return nil, errors.Trace(err)
 			}
-			if ds.tableInfo.Name.L == "testor" {
+			if ds.tableInfo.Name.L == "test" {
 				log.Print("table ", tblTask.cost())
 			}
 			if tblTask.cost() < t.cost() {
@@ -410,7 +410,7 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
-		if ds.tableInfo.Name.L == "testor" {
+		if ds.tableInfo.Name.L == "test" {
 			log.Print("index ", idxTask.cost())
 		}
 		if idxTask.cost() < t.cost() {

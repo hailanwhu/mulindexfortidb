@@ -140,23 +140,30 @@ func (ds *DataSource) DeriveStats(childStats []*property.StatsInfo) (*property.S
 		}
 	}
 
-	shouldConsiderIndexMerge := true
+	/*shouldConsiderIndexMergeOr := true
 	for _, path := range ds.possibleAccessPaths {
 		if path.isTablePath {
 			continue
 		}
 		if len(path.accessConds) != 0 {
-			shouldConsiderIndexMerge = false
+			shouldConsiderIndexMergeOr = false
 			break
 		}
 	}
+	*/
 	if ds.tableInfo.Name.L == "test" {
 		log.Println(0)
 	}
 
 	// If all index paths' accessCondtions is empty and have index
-	if  len(ds.possibleAccessPaths) > 1 && shouldConsiderIndexMerge {
+	if  len(ds.possibleAccessPaths) > 1 {//&& shouldConsiderIndexMergeOr {
 		ds.GetIndexMergeOrPaths()
+	}
+
+
+
+	if len(ds.pushedDownConds) > 1 &&  len(ds.whichIsNotIndexMergePaths) > 1{
+		ds.GetIndexMergeAndPaths()
 	}
 
 	if ds.ctx.GetSessionVars().OptimizerSelectivityLevel >= 1 {
@@ -164,6 +171,98 @@ func (ds *DataSource) DeriveStats(childStats []*property.StatsInfo) (*property.S
 	}
 	return ds.stats, nil
 }
+
+func (ds *DataSource) GetIndexMergeAndPaths() {
+	newConsiderConditions := make([]expression.Expression,0,0)
+	//whichConditionNotInAndInPushDown := make([]int, 0 ,0)
+	//whichConditionNotInAndInNere := make([]int, 0, 0)
+	tableFilters := make([]expression.Expression,0,0)
+	for _, i := range ds.whichIsIndexMergePaths {
+		tableFilters = append(tableFilters, ds.pushedDownConds[i])
+	}
+	for _, i := range ds.whichIsNotIndexMergePaths {
+		newConsiderConditions = append(newConsiderConditions, ds.pushedDownConds[i])
+	}
+	partialIndexAccessPaths := make([]*accessPath, 0 ,0)
+	for _, cond := range newConsiderConditions {
+		imPossiblePaths := ds.BuildAccessPath([]expression.Expression{cond})
+		if imPossiblePaths == nil {
+			tableFilters = append(tableFilters, cond)
+			continue
+		}
+		imPartialPath := ds.GetIndexMergePartialPath(imPossiblePaths)
+		if imPartialPath == nil {
+			tableFilters = append(tableFilters, cond)
+			continue
+		}
+		partialIndexAccessPaths = append(partialIndexAccessPaths, imPartialPath)
+	}
+	if len(partialIndexAccessPaths) > 1 {
+		ds.CreateIndexMergeAndPath(partialIndexAccessPaths, tableFilters)
+	}
+
+}
+
+func (ds *DataSource) CreateIndexMergeAndPath(indexAccessPaths []*accessPath, tableFilters []expression.Expression) {
+	finalIndexAccessPaths := make([]*accessPath, 0, 0)
+	indexCount := len(ds.tableInfo.Indices)
+	accessPathCount := len(indexAccessPaths)
+	whichIndexes := make([][]int64,indexCount+1,indexCount+1)
+	for i := 0; i < indexCount + 1; i++  {
+		whichIndexes[i] = make([]int64,0,accessPathCount)
+	}
+	for i, path := range indexAccessPaths  {
+		whichIndexes[path.index.ID] = append(whichIndexes[path.index.ID], int64(i))
+	}
+	for ixd, ixr := range whichIndexes  {
+		c := len(ixr)
+		switch c {
+		case 0:
+			continue
+		case 1:
+			finalIndexAccessPaths = append(finalIndexAccessPaths, indexAccessPaths[ixr[0]])
+		default:
+			tempCondition := make([]expression.Expression, 0, 0)
+			for _, which := range ixr {
+				tempCondition = append(tempCondition,indexAccessPaths[which].accessConds...)
+			}
+			newCondtion := expression.ComposeCNFCondition(ds.ctx,tempCondition...)
+			res, err := ranger.DetachCondAndBuildRangeForIndex(ds.ctx, []expression.Expression{newCondtion}, ds.possibleAccessPaths[ixd].idxCols,ds.possibleAccessPaths[ixd].idxColLens)
+			if err != nil {
+				return
+			}
+			if res.AccessConds == nil {
+				for _, which := range ixr {
+					finalIndexAccessPaths = append(finalIndexAccessPaths,indexAccessPaths[which])
+				}
+				continue
+			}
+			indexPath := ds.CreateIndexAccessPath(ixd, res)
+			if indexPath == nil {
+				for _, which := range ixr {
+					finalIndexAccessPaths = append(finalIndexAccessPaths,indexAccessPaths[which])
+				}
+				continue
+			}
+				finalIndexAccessPaths = append(finalIndexAccessPaths,indexPath)
+		}
+
+
+	}
+	if ds.tableInfo.Name.L == "test" {
+		log.Println(0)
+	}
+	if len(finalIndexAccessPaths) < 2 {
+		return
+	}
+	indexMergePath := new(accessPath)
+	indexMergePath.isIndexMerge = true
+	indexMergePath.indexMergeType = 1
+	indexMergePath.tableFilters = tableFilters
+	indexMergePath.partialPathsForIndexMerge = finalIndexAccessPaths
+	ds.indexMergeAccessPaths = append(ds.indexMergeAccessPaths, indexMergePath)
+}
+
 
 func (ds *DataSource) GetIndexMergeOrPaths(){
 	if ds.tableInfo.Name.L == "test" {
@@ -176,6 +275,7 @@ func (ds *DataSource) GetIndexMergeOrPaths(){
 
 
 		if sf, ok := cond.(*expression.ScalarFunction); !ok || sf.FuncName.L != ast.LogicOr {
+			ds.whichIsNotIndexMergePaths = append(ds.whichIsNotIndexMergePaths, i)
 			continue
 		}
 		sf, _ := cond.(*expression.ScalarFunction)
@@ -183,10 +283,10 @@ func (ds *DataSource) GetIndexMergeOrPaths(){
 		for _, item := range dnfItems {
 			if sfD, ok := item.(*expression.ScalarFunction); ok && sfD.FuncName.L == ast.LogicAnd {
 				cnfItem := expression.FlattenCNFConditions(sfD)
-				indexAccessPaths = ds.BuildAccessPathForOr(cnfItem)
+				indexAccessPaths = ds.BuildAccessPath(cnfItem)
 			} else {
 				tempArgs := []expression.Expression{item}
-				indexAccessPaths = ds.BuildAccessPathForOr(tempArgs)
+				indexAccessPaths = ds.BuildAccessPath(tempArgs)
 			}
 			if indexAccessPaths == nil {
 				imPaths = nil
@@ -202,12 +302,20 @@ func (ds *DataSource) GetIndexMergeOrPaths(){
 		}
 		if imPaths != nil {
 			possiblePath := ds.CreateIndexMergeOrPath(imPaths, i)
-			ds.indexMergeAccessPaths = append(ds.indexMergeAccessPaths, possiblePath)
+			if possiblePath != nil {
+				ds.indexMergeAccessPaths = append(ds.indexMergeAccessPaths, possiblePath)
+				ds.whichIsIndexMergePaths = append(ds.whichIsIndexMergePaths, i)
+			} else {
+				ds.whichIsNotIndexMergePaths = append(ds.whichIsNotIndexMergePaths, i)
+			}
+
+		}else {
+			ds.whichIsNotIndexMergePaths = append(ds.whichIsNotIndexMergePaths, i)
 		}
 	}
 }
 
-func (ds *DataSource) BuildAccessPathForOr(conditions []expression.Expression) []*accessPath{
+func (ds *DataSource) BuildAccessPath(conditions []expression.Expression) []*accessPath{
 	indexCount := len(ds.tableInfo.Indices)
 	if indexCount == 0 {
 		return nil
@@ -218,7 +326,7 @@ func (ds *DataSource) BuildAccessPathForOr(conditions []expression.Expression) [
 		if err != nil {
 			return nil
 		}
-		if res.AccessConds == nil {
+		if len(res.AccessConds) == 0 {
 			continue
 		}
 		indexPath := ds.CreateIndexAccessPath(i, res)
@@ -262,6 +370,9 @@ func (ds *DataSource) GetIndexMergePartialPath(indexAccessPaths []*accessPath) *
 	// if multiple accessPath does not have tableFilter we need to choose the exact one
 	// if all have tableFilter, randomly pick one
 	// TODO maybe all be reserved
+	if ds.tableInfo.Name.L == "test" {
+		log.Println(0)
+	}
 	if len(noTableFilter) == 0 {
 		return indexAccessPaths[0]
 	} else if len(noTableFilter) == 1{
@@ -271,7 +382,7 @@ func (ds *DataSource) GetIndexMergePartialPath(indexAccessPaths []*accessPath) *
 		whichMax := 0
 		max := len(indexAccessPaths[noTableFilter[0]].idxCols)
 		for i := 0; i < len(noTableFilter); i++ {
-			current := len(indexAccessPaths[noTableFilter[0]].idxCols)
+			current := len(indexAccessPaths[noTableFilter[i]].idxCols)
 			if  current > max {
 				whichMax = i
 				max = current
@@ -368,6 +479,9 @@ func (ds *DataSource) CreateIndexMergeOrPath(indexAccessPaths []*accessPath, whi
 			}
 		}
 	}
+	if len(finalIndexAccessPaths) < 2 {
+		return nil
+	}
 	indexMergePath := new(accessPath)
 	indexMergePath.isIndexMerge = true
 	indexMergePath.indexMergeType = 3
@@ -377,6 +491,7 @@ func (ds *DataSource) CreateIndexMergeOrPath(indexAccessPaths []*accessPath, whi
 		}
 		indexMergePath.tableFiltersForIndexMerge = append(indexMergePath.tableFiltersForIndexMerge,ds.pushedDownConds[i])
 	}
+
 
 	for _, ap := range finalIndexAccessPaths {
 		if ap.tableFilters != nil {

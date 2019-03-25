@@ -15,7 +15,6 @@ package executor
 
 import (
 	"context"
-	"github.com/pingcap/tidb/util/bitmap"
 	"math"
 	"runtime"
 	"sort"
@@ -395,14 +394,14 @@ func (e *IndexMergeLookUpExecutor) startAndWorker(ctx context.Context, workCh ch
 		resultCh: e.resultCh,
 		handles:  make([][]int64, len(e.idxPlans)),
 		mulType:  e.mulType,
-		bitmaps: make([]*bitmap.Bitmapset,len(e.idxPlans)),
+		maps: make([]map[int64]byte,len(e.idxPlans)),
 	}
 
 	e.andWokerWg.Add(1)
 	go func() {
 		worker.fetchLoop(total, ctx)
 		if worker.mulType == 1 {
-			worker.getFinalHanlesForAnd(ctx)
+			//worker.getFinalHanlesForAnd(ctx)
 		} else if worker.mulType == 3 {
 			//worker.getFinalHanlesForOr(ctx)
 		}
@@ -537,7 +536,7 @@ type andWorkerForIndexMerge struct {
 	workCh   chan<- *lookupTableTask
 	resultCh chan<- *lookupTableTask
 	handles  [][]int64
-	bitmaps []*bitmap.Bitmapset
+	maps     []map[int64]byte
 	mulType  int
 }
 
@@ -685,6 +684,9 @@ func (w *andWorkerForIndexMerge) buildTableTask(handles []int64) *lookupTableTas
 }
 
 func (w *andWorkerForIndexMerge) fetchLoop(total int,ctx context.Context) {
+	for i:= 0; i < len(w.maps); i++ {
+		w.maps[i] = make(map[int64]byte)
+	}
 	var task *lookupTableTask
 	var ok bool
 	for {
@@ -706,9 +708,9 @@ func (w *andWorkerForIndexMerge) fetchLoop(total int,ctx context.Context) {
 			if w.mulType == 3 {
 				fhs := make([]int64,0,0)
 				for i := 0; i < hc; i++ {
-					if !bitmap.IsABitmapMember(int(handles[i]),w.bitmaps[0]) {
+					if _,ok := w.maps[0][handles[i]]; !ok {
 						fhs = append(fhs,handles[i])
-						w.bitmaps[0] = bitmap.AddMember(w.bitmaps[0],int(handles[i]))
+						w.maps[0][handles[i]] = 0
 					}
 				}
 				task := w.buildTableTask(fhs)
@@ -719,11 +721,50 @@ func (w *andWorkerForIndexMerge) fetchLoop(total int,ctx context.Context) {
 					return //count, nil
 				case w.workCh <- task:
 					w.resultCh <- task
-				default:
-					return
 				}
 			} else if w.mulType == 1 {
-				log.Println(which)
+				fhs := make([]int64,0,0)
+				log.Println("type1")
+				log.Println(handles)
+				for i:=0; i < hc; i++ {
+					log.Println(which)
+					canBeAdd := true
+					for j := 0; j < len(w.maps); j++ {
+						if j == which {
+							continue
+						}
+						if _,ok := w.maps[j][handles[i]]; !ok {
+							canBeAdd = false
+							break
+						}
+					}
+					if !canBeAdd {
+						w.maps[which][handles[i]] = 0
+					} else {
+						for j := 0; j < len(w.maps); j++ {
+							if _,ok := w.maps[j][handles[i]]; ok {
+								delete(w.maps[j], handles[i])
+							}
+						}
+						fhs = append(fhs,handles[i])
+					}
+
+				}
+				if len(fhs) == 0 {
+					continue
+				}else {
+					log.Println(fhs)
+					task := w.buildTableTask(fhs)
+					select {
+					case <-ctx.Done():
+						return
+					case <-w.finished:
+						return //count, nil
+					case w.workCh <- task:
+						w.resultCh <- task
+					}
+				}
+
 			}
 			//if w.handles[which] == nil {
 			//	w.handles[which] = make([]int64, 0, 64)

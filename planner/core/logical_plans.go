@@ -342,6 +342,8 @@ type DataSource struct {
 	partitionNames  []model.CIStr
 
 	indexMergeAccessPaths []*accessPath
+	whichIsNotIndexMergePaths []int
+	whichIsIndexMergePaths []int
 }
 
 // accessPath tells how we access one index or just access table.
