@@ -625,14 +625,18 @@ type indexWorker struct {
 	currentLocalSelectivity float64
 	currentGlobalSelectivity float64
 	currentExplosionNumber int
+	currentBatchSeq int
 }
 
 
-func (w *indexWorker) smoothScanExplosionHandles() []int64{
+func (w *indexWorker) smoothScanExplosionHandles(handles []int64) []int64{
 	if w.isUnique {
-		if w.isOrdered {
 
+		if w.isOrdered {
+			// only include one tuple, do not need to explosion
+			return handles
 		} else {
+			// we can explosion it
 
 		}
 	} else {
@@ -684,7 +688,7 @@ func (w *indexWorker) fetchHandles(ctx context.Context, result distsql.SelectRes
 		// record the accessed
 		// and local selectivity and global selectivity
 		if w.isSmoothScan {
-			handles = w.smoothScanExplosionHandles()
+			handles = w.smoothScanExplosionHandles(handles)
 		}
 		// how get the actual result???
 		count += int64(len(handles))
@@ -841,6 +845,7 @@ func (w *tableWorker) executeTask(ctx context.Context, task *lookupTableTask) er
 		return errors.Errorf("handle count %d isn't equal to value count %d, missing handles %v in a batch",
 			handleCnt, len(task.rows), GetLackHandles(task.handles, obtainedHandlesMap))
 	}
+	//there can send how many returned every batch, and can calculate the selectivity.
 
 	return nil
 }
