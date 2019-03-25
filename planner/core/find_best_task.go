@@ -424,7 +424,7 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
-		if ds.tableInfo.Name.L == "testor" {
+		if ds.tableInfo.Name.L == "test" {
 			log.Printf("%d:  %f",i,imTask.cost())
 		}
 		if imTask.cost() < t.cost() {
