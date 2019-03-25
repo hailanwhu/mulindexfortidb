@@ -15,6 +15,7 @@ package executor
 
 import (
 	"context"
+	"github.com/pingcap/tidb/util/bitmap"
 	"math"
 	"runtime"
 	"sort"
@@ -212,7 +213,6 @@ func rebuildIndexRanges(ctx sessionctx.Context, is *plannercore.PhysicalIndexSca
 // IndexReaderExecutor sends dag request and reads index data from kv layer.
 type IndexReaderExecutor struct {
 	baseExecutor
-
 	table           table.Table
 	index           *model.IndexInfo
 	physicalTableID int64
@@ -360,6 +360,9 @@ type IndexLookUpExecutor struct {
 	colLens         []int
 
 	isSmoothScan bool
+	isOrdered   bool
+	rowLen      int
+	isUnique    bool
 }
 
 // Open implements the Executor Open interface.
@@ -393,6 +396,7 @@ func (e *IndexLookUpExecutor) open(ctx context.Context, kvRanges []kv.KeyRange) 
 
 	e.finished = make(chan struct{})
 	e.resultCh = make(chan *lookupTableTask, atomic.LoadInt32(&LookupTableTaskChannelSize))
+
 
 	var err error
 	if e.corColInIdxSide {
@@ -452,6 +456,13 @@ func (e *IndexLookUpExecutor) startIndexWorker(ctx context.Context, kvRanges []k
 		batchSize:    e.maxChunkSize,
 		maxBatchSize: e.ctx.GetSessionVars().IndexLookupSize,
 		maxChunkSize: e.maxChunkSize,
+		isUnique: e.isUnique,
+		isSmoothScan: e.isSmoothScan,
+		rowLen: e.rowLen,
+		isOrdered: e.isOrdered,
+		currentLocalSelectivity: -1,
+		currentGlobalSelectivity: -1,
+		currentExplosionNumber:-1,
 	}
 	if worker.batchSize > worker.maxBatchSize {
 		worker.batchSize = worker.maxBatchSize
@@ -603,12 +614,41 @@ type indexWorker struct {
 	batchSize    int
 	maxBatchSize int
 	maxChunkSize int
+	visited *bitmap.Bitmapset
+
+	colLens         []int
+
+	isSmoothScan bool
+	isOrdered   bool
+	rowLen      int
+	isUnique    bool
+	currentLocalSelectivity float64
+	currentGlobalSelectivity float64
+	currentExplosionNumber int
 }
 
+
+func (w *indexWorker) smoothScanExplosionHandles() []int64{
+	if w.isUnique {
+		if w.isOrdered {
+
+		} else {
+
+		}
+	} else {
+		if w.isOrdered {
+
+		} else {
+
+		}
+	}
+	return nil
+}
 // fetchHandles fetches a batch of handles from index data and builds the index lookup tasks.
 // The tasks are sent to workCh to be further processed by tableWorker, and sent to e.resultCh
 // at the same time to keep data ordered.
 func (w *indexWorker) fetchHandles(ctx context.Context, result distsql.SelectResult) (count int64, err error) {
+	w.visited = new(bitmap.Bitmapset)
 	defer func() {
 		if r := recover(); r != nil {
 			buf := make([]byte, 4096)
@@ -640,6 +680,13 @@ func (w *indexWorker) fetchHandles(ctx context.Context, result distsql.SelectRes
 		if len(handles) == 0 {
 			return count, nil
 		}
+		// do audit the handles
+		// record the accessed
+		// and local selectivity and global selectivity
+		if w.isSmoothScan {
+			handles = w.smoothScanExplosionHandles()
+		}
+		// how get the actual result???
 		count += int64(len(handles))
 		task := w.buildTableTask(handles)
 		select {

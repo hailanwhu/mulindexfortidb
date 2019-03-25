@@ -219,6 +219,9 @@ func buildNoRangeSmoothScan(b *executorBuilder, v *plannercore.PhysicalSmoothSca
 		idxPlans:          v.IndexPlans,
 		tblPlans:          v.TablePlans,
 		isSmoothScan:      true,
+		isOrdered:         v.IsOrderd,
+		rowLen:            v.RowLen,
+		isUnique:          v.IsUnique,
 	}
 	if isPartition, physicalTableID := ts.IsPartition(); isPartition {
 		e.physicalTableID = physicalTableID

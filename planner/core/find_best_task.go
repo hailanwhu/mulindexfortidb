@@ -589,7 +589,16 @@ func (is *PhysicalIndexScan) addPushedDownSelection(copTask *copTask, p *DataSou
 	if tableConds != nil {
 		copTask.finishIndexPlan()
 		copTask.cst += copTask.count() * cpuFactor
+		accessConditions := is.AccessCondition
+		tableConds = append(tableConds,accessConditions...)
 		tableSel := PhysicalSelection{Conditions: tableConds}.Init(is.ctx, p.stats.ScaleByExpectCnt(expectedCnt))
+		tableSel.SetChildren(copTask.tablePlan)
+		copTask.tablePlan = tableSel
+	} else {
+		copTask.finishIndexPlan()
+		copTask.cst += copTask.count() * cpuFactor
+		accessConditions := is.AccessCondition
+		tableSel := PhysicalSelection{Conditions: accessConditions}.Init(is.ctx, p.stats.ScaleByExpectCnt(expectedCnt))
 		tableSel.SetChildren(copTask.tablePlan)
 		copTask.tablePlan = tableSel
 	}
