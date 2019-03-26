@@ -258,7 +258,7 @@ func (ds *DataSource) CreateIndexMergeAndPath(indexAccessPaths []*accessPath, ta
 	indexMergePath := new(accessPath)
 	indexMergePath.isIndexMerge = true
 	indexMergePath.indexMergeType = 1
-	indexMergePath.tableFilters = tableFilters
+	indexMergePath.tableFiltersForIndexMerge = tableFilters
 	indexMergePath.partialPathsForIndexMerge = finalIndexAccessPaths
 	ds.indexMergeAccessPaths = append(ds.indexMergeAccessPaths, indexMergePath)
 }

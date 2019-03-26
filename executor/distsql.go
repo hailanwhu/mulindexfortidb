@@ -753,7 +753,7 @@ func (w *andWorkerForIndexMerge) fetchLoop(total int,ctx context.Context) {
 				if len(fhs) == 0 {
 					continue
 				}else {
-					log.Println(fhs)
+					log.Printf("send : %v", fhs)
 					task := w.buildTableTask(fhs)
 					select {
 					case <-ctx.Done():
@@ -902,6 +902,7 @@ func (w *tableWorkerForIndexMerge) executeTask(ctx context.Context, task *lookup
 	//task.memUsage = memUsage
 	//task.memTracker.Consume(memUsage)
 	handleCnt := len(task.handles)
+	log.Printf("table task handles: %v",task.handles)
 	task.rows = make([]chunk.Row, 0, handleCnt)
 	for {
 		chk := tableReader.newFirstChunk()
@@ -911,6 +912,7 @@ func (w *tableWorkerForIndexMerge) executeTask(ctx context.Context, task *lookup
 			return errors.Trace(err)
 		}
 		if chk.NumRows() == 0 {
+			log.Printf("table task break")
 			break
 		}
 		//memUsage = chk.MemoryUsage()
@@ -920,6 +922,7 @@ func (w *tableWorkerForIndexMerge) executeTask(ctx context.Context, task *lookup
 		for row := iter.Begin(); row != iter.End(); row = iter.Next() {
 			task.rows = append(task.rows, row)
 		}
+		log.Printf("table task rows: %v",task.rows)
 	}
 	//memUsage = int64(cap(task.rows)) * int64(unsafe.Sizeof(chunk.Row{}))
 	//task.memUsage += memUsage
