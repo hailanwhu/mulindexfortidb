@@ -418,6 +418,10 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 		}
 	}
 
+	if ds.tableInfo.Name.L == "test" {
+		log.Print("")
+	}
+
 	// above not execute
 	for i, path := range ds.indexMergeAccessPaths {
 		imTask, err := ds.convertToIndexMergeScan(prop, path, path.indexMergeType)
@@ -431,6 +435,7 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 			t = imTask
 		}
 	}
+	log.Println("finish plan")
 
 
 	return
@@ -908,6 +913,9 @@ func (is *PhysicalIndexScan) addPushedDownSelection(copTask *copTask, p *DataSou
 		tableSel := PhysicalSelection{Conditions: tableConds}.Init(is.ctx, p.stats.ScaleByExpectCnt(expectedCnt))
 		tableSel.SetChildren(copTask.tablePlan)
 		copTask.tablePlan = tableSel
+	}
+	if is.Table.Name.L == "test" {
+		log.Println(0)
 	}
 }
 

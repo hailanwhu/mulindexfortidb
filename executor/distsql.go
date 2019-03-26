@@ -540,131 +540,6 @@ type andWorkerForIndexMerge struct {
 	mulType  int
 }
 
-//type int64arr []int64
-//func (a int64arr) Len() int { return len(a) }
-//func (a int64arr) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
-//func (a int64arr) Less(i, j int) bool { return a[i] < a[j] }
-
-func (w *andWorkerForIndexMerge) getFinalHanlesForOr(ctx context.Context) {
-	finalHandles := make([]int64, 0, 100)
-	added := make(map[int64]int64)
-	for i := 0; i < len(w.handles); i++ {
-		//finalHandles = append(finalHandles, w.handles[i]...)
-		for j := 0; j < len(w.handles[i]); j++ {
-			_, ok := added[w.handles[i][j]]
-			if ok {
-				continue
-			} else {
-				added[w.handles[i][j]] = w.handles[i][j]
-				finalHandles = append(finalHandles, w.handles[i][j])
-			}
-		}
-	}
-	handlesCount := len(finalHandles)
-	for i := 0; i < handlesCount; i++ {
-		handles := make([]int64, 0, 1)
-		handles = append(handles, finalHandles[i])
-		task := w.buildTableTask(handles)
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.finished:
-			return //count, nil
-		case w.workCh <- task:
-			w.resultCh <- task
-		default:
-			return
-		}
-
-	}
-
-}
-
-func (w *andWorkerForIndexMerge) getFinalHanlesForAnd(ctx context.Context) {
-	for i := 0; i < len(w.handles); i++ {
-		sort.Slice(w.handles[i][:], func(m, n int) bool { return w.handles[i][m] < w.handles[i][n] })
-	}
-	lengths := make([]int, 0, len(w.handles))
-	curs := make([]int, 0, len(w.handles))
-
-	minIndex := -1
-	minLen := math.MaxInt64
-	for i := 0; i < len(w.handles); i++ {
-		tempLen := len(w.handles[i])
-		lengths = append(lengths, tempLen)
-		if tempLen < minLen {
-			minLen = tempLen
-			minIndex = i
-		}
-		curs = append(curs, 0)
-	}
-
-	if minLen == 0 {
-		// no result can be found
-		// tell finish
-		return
-	}
-	finalHandles := make([]int64, 0, minLen)
-
-	for {
-		if curs[minIndex] == lengths[minIndex] {
-			break
-		}
-		curHandle := w.handles[minIndex][curs[minIndex]]
-		canBeInFinal := true
-		someOneFinish := false
-		for i := 0; i < len(w.handles); i++ {
-			if i == minIndex {
-				continue
-			}
-			if curs[i] == lengths[i] {
-				someOneFinish = true
-				break
-			}
-
-			if w.handles[i][curs[i]] < curHandle {
-				curs[i]++
-				for (curs[i] < lengths[i]) && (w.handles[i][curs[i]] < curHandle) {
-					curs[i]++
-				}
-				if curs[i] == lengths[i] {
-					someOneFinish = true
-					break
-				} else if w.handles[i][curs[i]] > curHandle {
-					canBeInFinal = false
-					continue
-				}
-			}
-		}
-		if someOneFinish {
-			break
-		}
-		if canBeInFinal {
-			finalHandles = append(finalHandles, w.handles[minIndex][curs[minIndex]])
-		}
-		curs[minIndex]++
-	}
-	//according to handlesCount to splict array and get task send to tableWorker
-	handlesCount := len(finalHandles)
-
-	for i := 0; i < handlesCount; i++ {
-		handles := make([]int64, 0, 1)
-		handles = append(handles, finalHandles[i])
-		task := w.buildTableTask(handles)
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.finished:
-			return //count, nil
-		case w.workCh <- task:
-			w.resultCh <- task
-		default:
-			return
-		}
-
-	}
-
-}
 
 func (w *andWorkerForIndexMerge) buildTableTask(handles []int64) *lookupTableTask {
 	var indexOrder map[int64]int
@@ -712,6 +587,9 @@ func (w *andWorkerForIndexMerge) fetchLoop(total int,ctx context.Context) {
 						fhs = append(fhs,handles[i])
 						w.maps[0][handles[i]] = 0
 					}
+				}
+				if len(fhs) == 0 {
+					continue
 				}
 				task := w.buildTableTask(fhs)
 				select {

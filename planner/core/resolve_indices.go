@@ -16,6 +16,7 @@ package core
 import (
 	"github.com/pingcap/tidb/expression"
 	"github.com/pingcap/tidb/util/disjointset"
+	"log"
 )
 
 // ResolveIndices implements Plan interface.
@@ -237,6 +238,22 @@ func (p *PhysicalIndexReader) ResolveIndices() (err error) {
 }
 
 // ResolveIndices implements Plan interface.
+func (p *PhysicalIndexMergeLookUpReader) ResolveIndices() (err error) {
+	err = p.tablePlan.ResolveIndices()
+	if err != nil {
+		return err
+	}
+	for i :=0 ; i < len(p.indexPlans); i++ {
+		err = p.indexPlans[i].ResolveIndices()
+		if err != nil {
+			return err
+		}
+	}
+
+	return
+}
+
+// ResolveIndices implements Plan interface.
 func (p *PhysicalIndexLookUpReader) ResolveIndices() (err error) {
 	err = p.tablePlan.ResolveIndices()
 	if err != nil {
@@ -251,6 +268,10 @@ func (p *PhysicalIndexLookUpReader) ResolveIndices() (err error) {
 
 // ResolveIndices implements Plan interface.
 func (p *PhysicalSelection) ResolveIndices() (err error) {
+	tt,_ :=p.children[0].(*PhysicalTableScan)
+	if tt.Table.Name.L == "test" {
+		log.Print(0)
+	}
 	err = p.basePhysicalPlan.ResolveIndices()
 	if err != nil {
 		return err

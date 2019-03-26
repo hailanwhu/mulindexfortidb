@@ -16,6 +16,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"log"
 	"math"
 	"sort"
 	"strings"
@@ -1698,6 +1699,9 @@ func buildNoRangeIndexLookUpReader(b *executorBuilder, v *plannercore.PhysicalIn
 	}
 
 	ts := v.TablePlans[0].(*plannercore.PhysicalTableScan)
+	if ts.Table.Name.L == "test" {
+		log.Print(0)
+	}
 
 	e := &IndexLookUpExecutor{
 		baseExecutor:      newBaseExecutor(b.ctx, v.Schema(), v.ExplainID()),
@@ -1744,6 +1748,7 @@ func buildNoRangeIndexLookUpReader(b *executorBuilder, v *plannercore.PhysicalIn
 }
 
 func (b *executorBuilder) buildIndexLookUpReader(v *plannercore.PhysicalIndexLookUpReader) *IndexLookUpExecutor {
+
 	ret, err := buildNoRangeIndexLookUpReader(b, v)
 	if err != nil {
 		b.err = errors.Trace(err)
@@ -1752,6 +1757,9 @@ func (b *executorBuilder) buildIndexLookUpReader(v *plannercore.PhysicalIndexLoo
 
 	is := v.IndexPlans[0].(*plannercore.PhysicalIndexScan)
 	ts := v.TablePlans[0].(*plannercore.PhysicalTableScan)
+	if ts.Table.Name.L == "test" {
+		log.Println(0)
+	}
 
 	ret.ranges = is.Ranges
 	metrics.ExecutorCounter.WithLabelValues("IndexLookUpExecutor").Inc()

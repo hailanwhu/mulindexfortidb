@@ -199,6 +199,7 @@ func collationToProto(c string) int32 {
 }
 
 func (pc PbConverter) columnToPBExpr(column *Column) *tipb.Expr {
+	log.Printf("%s %d",column.ColName.L,column.Index)
 	if !pc.client.IsRequestTypeSupported(kv.ReqTypeSelect, int64(tipb.ExprType_ColumnRef)) {
 		return nil
 	}
