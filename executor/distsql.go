@@ -15,7 +15,6 @@ package executor
 
 import (
 	"context"
-	"github.com/pingcap/tidb/util/bitmap"
 	"math"
 	"runtime"
 	"sort"
@@ -472,9 +471,6 @@ func (e *IndexLookUpExecutor) startIndexWorker(ctx context.Context, kvRanges []k
 		isSmoothScan: e.isSmoothScan,
 		rowLen: e.rowLen,
 		isOrdered: e.isOrdered,
-		currentLocalSelectivity: -1,
-		currentGlobalSelectivity: -1,
-		currentExplosionNumber:-1,
 		feedBackLocalCh: feedBackLocalCh,
 	}
 	if worker.batchSize > worker.maxBatchSize {
@@ -628,7 +624,6 @@ type indexWorker struct {
 	batchSize    int
 	maxBatchSize int
 	maxChunkSize int
-	visited *bitmap.Bitmapset
 
 	colLens         []int
 
@@ -636,16 +631,13 @@ type indexWorker struct {
 	isOrdered   bool
 	rowLen      int
 	isUnique    bool
-	currentLocalSelectivity float64
-	currentGlobalSelectivity float64
-	currentExplosionNumber int
-	currentBatchSeq int
+
 
 	feedBackLocalCh <-chan *feedBackLocal
 }
 
 
-func (w *indexWorker) smoothScanExplosionHandles(handles []int64) []int64{
+func (w *indexWorker) smoothScanExplosionHandles(handles []int64, globalSel float64, localSel float64, expendNum int64) []int64{
 	if w.isUnique {
 
 		if w.isOrdered {
@@ -657,7 +649,10 @@ func (w *indexWorker) smoothScanExplosionHandles(handles []int64) []int64{
 		}
 	} else {
 		if w.isOrdered {
-
+			log.Println("isOrdered")
+			sort.Slice(handles[:], func(m, n int) bool { return handles[m] < handles[n]})
+			lastHandle := handles[len(handles)-1]
+			handles = append(handles,[]int64{lastHandle+1, lastHandle+2, lastHandle+3}...)
 		} else {
 
 		}
@@ -668,7 +663,15 @@ func (w *indexWorker) smoothScanExplosionHandles(handles []int64) []int64{
 // The tasks are sent to workCh to be further processed by tableWorker, and sent to e.resultCh
 // at the same time to keep data ordered.
 func (w *indexWorker) fetchHandles(ctx context.Context, result distsql.SelectResult) (count int64, err error) {
-	w.visited = new(bitmap.Bitmapset)
+
+	currentLocalSelectivity := float64(-1)
+	currentGlobalSelectivity := float64(-1)
+	currentGlobalRes := float64(0)
+	currentGlobalSeen := float64(0)
+	//currentLocallRes := float64(0)
+	//currentLocalSeen := float64(0)
+	currentExpendNumber := int64(64*1024/w.rowLen)
+
 	whichSeq := 0
 	defer func() {
 		if r := recover(); r != nil {
@@ -704,10 +707,12 @@ func (w *indexWorker) fetchHandles(ctx context.Context, result distsql.SelectRes
 		// do audit the handles
 		// record the accessed
 		// and local selectivity and global selectivity
+		log.Printf("first handles:%v\n", handles)
 		if w.isSmoothScan {
-			handles = w.smoothScanExplosionHandles(handles)
+			handles = w.smoothScanExplosionHandles(handles, currentGlobalSelectivity, currentLocalSelectivity, currentExpendNumber)
 		}
 		// how get the actual result???
+		log.Printf("second handles:%v\n", handles)
 		count += int64(len(handles))
 		task := w.buildTableTask(whichSeq, handles)
 		select {
@@ -725,6 +730,8 @@ func (w *indexWorker) fetchHandles(ctx context.Context, result distsql.SelectRes
 					if feedBL.seq == whichSeq {
 						confirm = true
 					}
+					currentGlobalSelectivity = float64(feedBL.rowCount+currentGlobalRes)/(float64(len(handles))+currentGlobalSeen)
+					currentLocalSelectivity = feedBL.rowCount/float64(len(handles))
 					log.Printf("rwoCount:%v,handls:%v",feedBL.rowCount,len(handles))
 					log.Printf("feedback local selectivity:%v", feedBL.rowCount/float64(len(handles)))
 			}

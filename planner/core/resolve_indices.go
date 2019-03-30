@@ -249,6 +249,19 @@ func (p *PhysicalIndexLookUpReader) ResolveIndices() (err error) {
 	return
 }
 
+func (p *PhysicalSmoothScan) ResolveIndices() (err error) {
+	err = p.tablePlan.ResolveIndices()
+	if err != nil {
+		return err
+	}
+	err = p.indexPlan.ResolveIndices()
+	if err != nil {
+		return err
+	}
+	return
+
+}
+
 // ResolveIndices implements Plan interface.
 func (p *PhysicalSelection) ResolveIndices() (err error) {
 	err = p.basePhysicalPlan.ResolveIndices()

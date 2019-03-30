@@ -215,7 +215,7 @@ func finishCopTask(ctx sessionctx.Context, task task) task {
 	if t.indexPlan != nil && t.tablePlan != nil {
 		indexPlanT, _ := (t.indexPlan).(* PhysicalIndexScan)
 		isUnique := indexPlanT.Index.Unique
-		isOrderd := indexPlanT.EqCount == len(indexPlanT.Columns)
+		isOrderd := indexPlanT.EqCount == len(indexPlanT.Index.Columns)
 		rowLen := 0
 		for _, col := range indexPlanT.Table.Columns {
 			rowLen += col.Flen
