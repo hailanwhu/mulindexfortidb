@@ -83,6 +83,8 @@ type lookupTableTask struct {
 	// Step 4   is  completed in "IndexLookUpExecutor.Next".
 	memUsage   int64
 	memTracker *memory.Tracker
+
+	seq int
 }
 
 func (task *lookupTableTask) Len() int {
@@ -363,6 +365,15 @@ type IndexLookUpExecutor struct {
 	isOrdered   bool
 	rowLen      int
 	isUnique    bool
+
+	feedBackLocalCh chan *feedBackLocal
+
+
+}
+
+type feedBackLocal struct {
+	seq int
+	rowCount float64
 }
 
 // Open implements the Executor Open interface.
@@ -396,6 +407,7 @@ func (e *IndexLookUpExecutor) open(ctx context.Context, kvRanges []kv.KeyRange) 
 
 	e.finished = make(chan struct{})
 	e.resultCh = make(chan *lookupTableTask, atomic.LoadInt32(&LookupTableTaskChannelSize))
+	feedBackLocalCh := make(chan *feedBackLocal,1)
 
 
 	var err error
@@ -416,16 +428,16 @@ func (e *IndexLookUpExecutor) open(ctx context.Context, kvRanges []kv.KeyRange) 
 	// indexWorker will write to workCh and tableWorker will read from workCh,
 	// so fetching index and getting table data can run concurrently.
 	workCh := make(chan *lookupTableTask, 1)
-	err = e.startIndexWorker(ctx, kvRanges, workCh)
+	err = e.startIndexWorker(ctx, kvRanges, workCh, feedBackLocalCh)
 	if err != nil {
 		return errors.Trace(err)
 	}
-	e.startTableWorker(ctx, workCh)
+	e.startTableWorker(ctx, workCh, feedBackLocalCh)
 	return nil
 }
 
 // startIndexWorker launch a background goroutine to fetch handles, send the results to workCh.
-func (e *IndexLookUpExecutor) startIndexWorker(ctx context.Context, kvRanges []kv.KeyRange, workCh chan<- *lookupTableTask) error {
+func (e *IndexLookUpExecutor) startIndexWorker(ctx context.Context, kvRanges []kv.KeyRange, workCh chan<- *lookupTableTask, feedBackLocalCh <-chan *feedBackLocal) error {
 	if e.runtimeStats != nil {
 		collExec := true
 		e.dagPB.CollectExecutionSummaries = &collExec
@@ -463,6 +475,7 @@ func (e *IndexLookUpExecutor) startIndexWorker(ctx context.Context, kvRanges []k
 		currentLocalSelectivity: -1,
 		currentGlobalSelectivity: -1,
 		currentExplosionNumber:-1,
+		feedBackLocalCh: feedBackLocalCh,
 	}
 	if worker.batchSize > worker.maxBatchSize {
 		worker.batchSize = worker.maxBatchSize
@@ -493,7 +506,7 @@ func (e *IndexLookUpExecutor) startIndexWorker(ctx context.Context, kvRanges []k
 }
 
 // startTableWorker launchs some background goroutines which pick tasks from workCh and execute the task.
-func (e *IndexLookUpExecutor) startTableWorker(ctx context.Context, workCh <-chan *lookupTableTask) {
+func (e *IndexLookUpExecutor) startTableWorker(ctx context.Context, workCh <-chan *lookupTableTask, feedBackLocalCh chan <-*feedBackLocal) {
 	lookupConcurrencyLimit := e.ctx.GetSessionVars().IndexLookupConcurrency
 	e.tblWorkerWg.Add(lookupConcurrencyLimit)
 	for i := 0; i < lookupConcurrencyLimit; i++ {
@@ -505,6 +518,7 @@ func (e *IndexLookUpExecutor) startTableWorker(ctx context.Context, workCh <-cha
 			handleIdx:      e.handleIdx,
 			isCheckOp:      e.isCheckOp,
 			memTracker:     memory.NewTracker("tableWorker", -1),
+			feedBackLocalCh: feedBackLocalCh,
 		}
 		worker.memTracker.AttachTo(e.memTracker)
 		ctx1, cancel := context.WithCancel(ctx)
@@ -626,6 +640,8 @@ type indexWorker struct {
 	currentGlobalSelectivity float64
 	currentExplosionNumber int
 	currentBatchSeq int
+
+	feedBackLocalCh <-chan *feedBackLocal
 }
 
 
@@ -646,13 +662,14 @@ func (w *indexWorker) smoothScanExplosionHandles(handles []int64) []int64{
 
 		}
 	}
-	return nil
+	return handles
 }
 // fetchHandles fetches a batch of handles from index data and builds the index lookup tasks.
 // The tasks are sent to workCh to be further processed by tableWorker, and sent to e.resultCh
 // at the same time to keep data ordered.
 func (w *indexWorker) fetchHandles(ctx context.Context, result distsql.SelectResult) (count int64, err error) {
 	w.visited = new(bitmap.Bitmapset)
+	whichSeq := 0
 	defer func() {
 		if r := recover(); r != nil {
 			buf := make([]byte, 4096)
@@ -692,7 +709,7 @@ func (w *indexWorker) fetchHandles(ctx context.Context, result distsql.SelectRes
 		}
 		// how get the actual result???
 		count += int64(len(handles))
-		task := w.buildTableTask(handles)
+		task := w.buildTableTask(whichSeq, handles)
 		select {
 		case <-ctx.Done():
 			return count, nil
@@ -701,6 +718,21 @@ func (w *indexWorker) fetchHandles(ctx context.Context, result distsql.SelectRes
 		case w.workCh <- task:
 			w.resultCh <- task
 		}
+		confirm := false
+		for {
+			select {
+				case feedBL := <- w.feedBackLocalCh:
+					if feedBL.seq == whichSeq {
+						confirm = true
+					}
+					log.Printf("rwoCount:%v,handls:%v",feedBL.rowCount,len(handles))
+					log.Printf("feedback local selectivity:%v", feedBL.rowCount/float64(len(handles)))
+			}
+			if confirm {
+				break
+			}
+		}
+		whichSeq++
 	}
 }
 
@@ -725,7 +757,7 @@ func (w *indexWorker) extractTaskHandles(ctx context.Context, chk *chunk.Chunk, 
 	return handles, nil
 }
 
-func (w *indexWorker) buildTableTask(handles []int64) *lookupTableTask {
+func (w *indexWorker) buildTableTask(seq int, handles []int64) *lookupTableTask {
 	var indexOrder map[int64]int
 	if w.keepOrder {
 		// Save the index order.
@@ -737,6 +769,7 @@ func (w *indexWorker) buildTableTask(handles []int64) *lookupTableTask {
 	task := &lookupTableTask{
 		handles:    handles,
 		indexOrder: indexOrder,
+		seq:seq,
 	}
 	task.doneCh = make(chan error, 1)
 	return task
@@ -755,6 +788,8 @@ type tableWorker struct {
 
 	// isCheckOp is used to determine whether we need to check the consistency of the index data.
 	isCheckOp bool
+
+	feedBackLocalCh chan<- *feedBackLocal
 }
 
 // pickAndExecTask picks tasks from workCh, and execute them.
@@ -845,6 +880,13 @@ func (w *tableWorker) executeTask(ctx context.Context, task *lookupTableTask) er
 		return errors.Errorf("handle count %d isn't equal to value count %d, missing handles %v in a batch",
 			handleCnt, len(task.rows), GetLackHandles(task.handles, obtainedHandlesMap))
 	}
+	//which := task.seq
+	//feedBackLocal{}
+	feedBackInfo := &feedBackLocal{
+		seq:    task.seq,
+		rowCount: float64(len(task.rows)),
+	}
+	w.feedBackLocalCh <- feedBackInfo
 	//there can send how many returned every batch, and can calculate the selectivity.
 
 	return nil
