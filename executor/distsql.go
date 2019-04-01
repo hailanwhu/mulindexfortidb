@@ -15,6 +15,7 @@ package executor
 
 import (
 	"context"
+	"github.com/pingcap/tidb/util/bitmap"
 	"math"
 	"runtime"
 	"sort"
@@ -634,30 +635,67 @@ type indexWorker struct {
 
 
 	feedBackLocalCh <-chan *feedBackLocal
+
+	visited *bitmap.Bitmapset
+	blockSize int
 }
 
 
-func (w *indexWorker) smoothScanExplosionHandles(handles []int64, globalSel float64, localSel float64, expendNum int64) []int64{
-	if w.isUnique {
+func (w *indexWorker) smoothScanExplosionHandles(handles []int64, globalSel float64, localSel float64, expendNum int) []int64{
+	newhandles := make([]int64,0,0)
+	//if w.isUnique {
 
 		if w.isOrdered {
-			// only include one tuple, do not need to explosion
+			// only include one tuple, do not need to extend
 			return handles
 		} else {
 			// we can explosion it
-
-		}
-	} else {
-		if w.isOrdered {
-			log.Println("isOrdered")
+			log.Println("is UnOrdered")
 			sort.Slice(handles[:], func(m, n int) bool { return handles[m] < handles[n]})
-			lastHandle := handles[len(handles)-1]
-			handles = append(handles,[]int64{lastHandle+1, lastHandle+2, lastHandle+3}...)
-		} else {
-
+			for _, handle := range handles {
+				seg := handle / int64(w.blockSize)
+				log.Println(seg)
+				for i := 0; i < expendNum; i++ {
+					seg = seg + int64(i)
+					if bitmap.IsABitmapMember(int(seg), w.visited) {
+						continue
+					} else {
+						startHandle := seg*int64(w.blockSize)+1
+						for temp := startHandle ; temp < startHandle + int64(w.blockSize); temp++ {
+							newhandles = append(newhandles, temp)
+						}
+						w.visited = bitmap.AddMember(w.visited, int(seg))
+					}
+				}
+			}
+			return newhandles
 		}
-	}
-	return handles
+	//} else {
+	/*
+		if w.isOrdered {
+			// do not need to extend
+			return handles
+		} else {
+			log.Println("is UnOrdered")
+			sort.Slice(handles[:], func(m, n int) bool { return handles[m] < handles[n]})
+			for _, handle := range handles {
+				seg := handle / int64(w.blockSize)
+				for i := 0; i < expendNum; i++ {
+					seg = seg + int64(i)
+					if bitmap.IsABitmapMember(int(seg), w.visited) {
+						continue
+					} else {
+						startHandle := seg*int64(w.blockSize)+1
+						for ; startHandle < startHandle + int64(w.blockSize); startHandle++ {
+							newhandles = append(newhandles, startHandle)
+						}
+						w.visited = bitmap.AddMember(w.visited, int(seg))
+					}
+				}
+			}
+			return newhandles
+		}*/
+	//}
 }
 // fetchHandles fetches a batch of handles from index data and builds the index lookup tasks.
 // The tasks are sent to workCh to be further processed by tableWorker, and sent to e.resultCh
@@ -668,9 +706,13 @@ func (w *indexWorker) fetchHandles(ctx context.Context, result distsql.SelectRes
 	currentGlobalSelectivity := float64(-1)
 	currentGlobalRes := float64(0)
 	currentGlobalSeen := float64(0)
-	//currentLocallRes := float64(0)
-	//currentLocalSeen := float64(0)
-	currentExpendNumber := int64(64*1024/w.rowLen)
+	// how much blocks
+	currentExpendNumber := 1
+	// BlockSize is virtual
+	// It depends on prefixSeek and next effects
+
+	w.blockSize = 5
+	w.visited = new(bitmap.Bitmapset)
 
 	whichSeq := 0
 	defer func() {
@@ -732,6 +774,13 @@ func (w *indexWorker) fetchHandles(ctx context.Context, result distsql.SelectRes
 					}
 					currentGlobalSelectivity = float64(feedBL.rowCount+currentGlobalRes)/(float64(len(handles))+currentGlobalSeen)
 					currentLocalSelectivity = feedBL.rowCount/float64(len(handles))
+					if currentLocalSelectivity >= currentGlobalSelectivity {
+						currentExpendNumber *= 2
+					} else {
+						if currentExpendNumber > 1 {
+							currentExpendNumber /=2
+						}
+					}
 					log.Printf("rwoCount:%v,handls:%v",feedBL.rowCount,len(handles))
 					log.Printf("feedback local selectivity:%v", feedBL.rowCount/float64(len(handles)))
 			}
