@@ -654,7 +654,7 @@ func (w *indexWorker) smoothScanExplosionHandles(handles []int64, globalSel floa
 			sort.Slice(handles[:], func(m, n int) bool { return handles[m] < handles[n]})
 			for _, handle := range handles {
 				seg := handle / int64(w.blockSize)
-				log.Println(seg)
+				//log.Println(seg)
 				for i := 0; i < expendNum; i++ {
 					seg = seg + int64(i)
 					if bitmap.IsABitmapMember(int(seg), w.visited) {
