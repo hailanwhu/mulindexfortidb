@@ -560,7 +560,9 @@ func (p *PhysicalHashAgg) attach2Task(tasks ...task) task {
 		partialAgg, finalAgg := p.newPartialAggregate()
 		if partialAgg != nil {
 			if cop.tablePlan != nil {
-				cop.finishIndexPlan()
+				if cop.mulType == 0 {
+					cop.finishIndexPlan()
+				}
 				partialAgg.SetChildren(cop.tablePlan)
 				cop.tablePlan = partialAgg
 			} else {
